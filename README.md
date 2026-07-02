@@ -5,8 +5,9 @@ Physical modelling sound synthesis targeting the Rhodes piano
 
 ## Tine
 Differential equation for shear beam from Pfeifle 2017,
+
 $$
-\rho\mathbf{u}_{tt} + [EI\mathbf{u}_{xx}]_{xx} - EA\frac{1}{2}\mathbf{u}_{xx} \cdot K(\mathbf{u}) - \kappa\mathbf{u}_{2x2t} - F(\mathbf{u}^{V}[x], t) = 0 \tag{2}
+\rho \mathbf{u}_{tt} + [EI\mathbf{u}_{xx}]_{xx} - EA\frac{1}{2}\mathbf{u}_{xx} \cdot K(\mathbf{u}) - \kappa \mathbf{u}_{2x2t} - F(\mathbf{u}^{V}[x], t) = 0
 $$
 
 ## Relevant Literature
