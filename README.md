@@ -10,6 +10,15 @@ $$
 \rho \mathbf{u}_{tt} + [EI\mathbf{u}_{xx}]_{xx} - EA\frac{1}{2}\mathbf{u}_{xx} \cdot K(\mathbf{u}) - \kappa \mathbf{u}_{2x2t} - F(\mathbf{u}^{V}[x], t) = 0
 $$
 
+## Tentative Plan
+- Model pickup from Pfeile (2017) (NN or Lookup table or both)
+- Reverse engineer modes (frequency, amplitude, decay) from sample pack, using pickup model, and compare with Gabrielli (2020)
+- Model excitation signal based on idealized clamped bar (using measurements? See below). Calculate for each key.
+- Rhodes real-time synthesis: Add modal synthesis with excitation signal, and feed through pickup model.
+
+## Rhodes measurements
+[https://www.fenderrhodes.com/org/manual/ch6.html](https://www.fenderrhodes.com/org/manual/ch6.html)
+
 ## Relevant Literature
 - [Real-time Physical Model of A Wurlitzer and Rhodes Electric Piano](https://dafx17.eca.ed.ac.uk/papers/DAFx17_paper_79.pdf)
 - [The Rhodes electric piano: Analysis and simulation of the inharmonic overtones](https://pubs.aip.org/asa/jasa/article/148/5/3052/631688/The-Rhodes-electric-piano-Analysis-and-simulation)
