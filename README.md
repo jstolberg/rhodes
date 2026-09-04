@@ -25,3 +25,4 @@ $$
 - [Rhodes Service Manual](https://dn760106.eu.archive.org/0/items/fender_Rhodes_Keyboard_Instruments_Service_Manual/Rhodes_Keyboard_Instruments_Service_Manual_text.pdf)
 - M. Muenster and F. Pfeifle - Non-Linear Behaviour in Sound Production of the Rhodes Piano
 - S. Bilbao - Numerical Sound Synthesis; Chapter 7
+- [Modeling the magnetic pickup of an electric guitar](https://users.manchester.edu/facstaff/gwclark/PHYS301/AJP%20Articles/AJP%20Electric%20Guitar%20pickup.pdf)
