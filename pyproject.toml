@@ -1,0 +1,18 @@
+[project]
+name = "rhodes_modelling"
+version = "0.1.0"
+description = "Physical modelling the Rhodes piano"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "ipykernel>=7.2.0",
+    "jaxdiffmodal",
+    "jupyter>=1.1.1",
+    "manim>=0.20.1",
+    "optax>=0.2.8",
+    "pyyaml>=6.0.3",
+    "scipy>=1.17.1",
+]
+
+[tool.uv.sources]
+jaxdiffmodal = { git = "https://github.com/rodrigodzf/jaxdiffmodal", rev = "v0.1.0" }

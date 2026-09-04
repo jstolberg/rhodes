@@ -1,0 +1,6 @@
+# Environment
+.venv
+venv/
+
+# Data
+Samples/
