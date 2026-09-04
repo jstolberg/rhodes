@@ -38,7 +38,9 @@ $$ \epsilon = - \frac{\text{d} \Psi(\alpha)}{\text{d} t} .$$
 
 Assuming a simple, modal model for $\alpha(t)$ in the x-axis means
 holding $y'$ and $z'$ fixed and letting
+
 $$x' = \alpha_x(t) = \sum_q A_q e^{- \lambda_q t} \sin(2\pi f_q t) $$
+
 where $A_q$ and $\lambda_q$ is the amplitude and decay for mode $q$ 
 with frequenzy $f_q$.
 If we fix a grid on the surface $S$, and approximate $\Psi(\alpha)$
