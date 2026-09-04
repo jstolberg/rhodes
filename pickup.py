@@ -15,7 +15,7 @@
 # $$ \mathcal{B}_z(\alpha) = \int_S \sigma B_z(\beta) \text{d}\beta $$
 # where $\sigma$ is the magnetic charge density across $S$. This causes a 
 # proportinal magnetisation of the tip of the tine, which in turn affects the magnetic
-# field at the surface, which due to the symmetry of the setting is identical
+# field at the surface $S$, which due to the symmetry of the setting is identical
 # up to a scaling factor $\gamma$, causing a magnetic flux
 # $$ \Psi(\alpha) \approx \gamma \mathcal{B}_z(\alpha)^2$$
 # Given an explicit expression for $S$, $\mathcal{B}_z$ can be solved numerically
@@ -27,10 +27,10 @@
 # $$x' = \alpha_x(t) = \sum_q A_q e^{- \lambda_q t} \sin(2\pi f_q t) $$
 # where $A_q$ and $\lambda_q$ is the amplitude and decay for mode $q$ 
 # with frequenzy $f_q$.
-# If we fix a grid on the surface $S$, and approximate $\Psi_{B_z}(\alpha)$
-# as the sum across this grid, it means writing $\Psi_{B_z}$ becomes an
+# If we fix a grid on the surface $S$, and approximate $\Psi(\alpha)$
+# as the sum across this grid, it means writing $\Psi$ becomes an
 # easily differentiable function in $t$, enabling us to fit the full 
-# model, including modes, based on voltage readings of the Rhodes output.
+# model, including modes, based on voltage outputs of the Rhodes output.
 # 
 # The model parameters are 
 # - $N$ - Number of fitted modes.
