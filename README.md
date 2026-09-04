@@ -64,13 +64,6 @@ real-time synthesis of the fitted instrument.
 - The coil implements a RLC circuit, implicitly implying a resonant,
 low-pass filter, which could be modelled too.
 
-## Tine
-Differential equation for shear beam from Pfeifle 2017,
-
-$$
-\rho \mathbf{u}_{tt} + [EI\mathbf{u}_{xx}]_{xx} - EA\frac{1}{2}\mathbf{u}_{xx} \cdot K(\mathbf{u}) - \kappa \mathbf{u}_{2x2t} - F(\mathbf{u}^{V}[x], t) = 0
-$$
-
 ## Tentative Plan
 - Model pickup from Pfeile (2017) (NN or Lookup table or both)
 - Reverse engineer modes (frequency, amplitude, decay) from sample pack, using pickup model, and compare with Gabrielli (2020)
