@@ -127,17 +127,25 @@ def epsilon(t, p, pts, w, chunk=256):
 
 # Example
 pts, w = make_surface(r_max=3e-3)
-p = dict(A=jnp.array([1e-3, 3e-4]), lam=jnp.array([2.0, 3.0]),
-         f=jnp.array([400.0, 1378.7]), p_d=1e-3, p_o=3e-3,
-         r_tine=10e-2, gamma=1.0)
+ratios = jnp.array([0.68, 1.0, 7.11, 20.25])
+f_0 = 440
+p = dict(
+    A=jnp.array([0.5, 1.0, 0.2, 0.1]) * 1e-4, 
+    lam=jnp.array([3, 1, 10, 20]),
+    f=f_0 * ratios, 
+    p_d=1e-3, 
+    p_o=3e-4,
+    r_tine=10e-2,
+    gamma=1.0)
 
-t   = jnp.arange(0, 48000) / 48000.0
+fs = 48000.0
+l = 2
+t   = jnp.arange(0, l*fs) / fs
 eps = epsilon(t, p, pts, w)
 
 # %%
 # Plot results
 
-fs = 48000
 eps_np = np.asarray(eps, dtype=np.float64)
 
 f, t_spec, Sxx = signal.spectrogram(
@@ -161,5 +169,6 @@ plt.tight_layout(); plt.show()
 x = np.asarray(eps, dtype=np.float64)
 x = x / (np.max(np.abs(x)) + 1e-12)   # normalise to ±1
 
-Audio(x, rate=fs)                     # renders an inline player
+Audio(x, rate=fs) 
+
 # %%
