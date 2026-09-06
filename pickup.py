@@ -32,7 +32,9 @@
 # If we fix a grid on the surface $S$, and approximate $\Psi(\alpha)$
 # as the sum across this grid, it means writing $\Psi$ becomes an
 # easily differentiable function in $t$, enabling us to fit the full 
-# model, including modes, based on voltage outputs of the Rhodes output.
+# model, including modes, based on voltage outputs of the Rhodes output. 
+# The coil itself implements a RLC filter with cutoff frequency $f_\text{filter}$
+# and resonance $Q_\text{filter}$, which is applied to the output signal.
 # 
 # The model parameters are 
 # - $N$ - Number of fitted modes.
@@ -40,6 +42,7 @@
 # - $\kappa$ - Single multiplicative factor, encompassing $\gamma$, $\sigma$ and $B_0$.
 # - $S$ - The surface shape.
 # - $p_d, p_o$ - Tine distance respectively offset w.r.t. the pickup.
+# - $f_\text{filter}, Q_\text{filter}$ - The implicit RLC filter implemented by the coil circuit.
 # 
 # As $\Psi$ depends only on the position $\alpha$, a lookup table 
 # with precomputed, numerical solutions to the integral can be computed
@@ -75,28 +78,83 @@ print("jax", jax.__version__, "devices:", jax.devices())
 # 
 
 # %%
-def make_surface(N_r=64, N_phi=64, r_max=2e-3, z_profile=None):
-    """Radial surface"""
-    dr, dphi = r_max / N_r, 2*jnp.pi / N_phi
-    r_c   = (jnp.arange(N_r) + 0.5) * dr
-    phi_c = (jnp.arange(N_phi) + 0.5) * dphi
-    R, PHI = jnp.meshgrid(r_c, phi_c, indexing='ij')
+# Pickup surfaces
 
-    if z_profile is None:                    # flat guitar pickup
-        Z, metric = jnp.zeros_like(R), 1.0
-    else:
-        Z = z_profile(R)
-        dzdr = jax.vmap(jax.grad(z_profile))(R.ravel()).reshape(R.shape)
-        metric = jnp.sqrt(1.0 + dzdr**2)
+# ---------- surface definitions ----------
 
-    area = R * metric * dr * dphi            # r_bar * sqrt(1+z'^2) * dr * dphi
+def z_trapz(X, Y, a=0.5e-3, m=0.3, z0=0.0):
+    """Rhodes pickup: Flat plateau |x| <= a, chamfers of slope m, constant in y."""
+    return z0 - m * jnp.maximum(jnp.abs(X) - a, 0.0)
 
-    return (jnp.stack([R*jnp.cos(PHI), R*jnp.sin(PHI), Z], axis=-1).reshape(-1, 3),
-            area.ravel())
+
+def z_flat(X, Y, z0=0.0):
+    """Guitar pickup: flat disc."""
+    return jnp.full_like(X, z0)
+
+
+def disc_mask(X, Y, r_max):
+    return (X**2 + Y**2) <= r_max**2
+
+
+# ---------- grid + quadrature ----------
+
+def make_surface(z_fn, N=128, r_max=2e-3, mask_fn=disc_mask):
+    e = jnp.linspace(-r_max, r_max, N + 1)
+    c = 0.5 * (e[:-1] + e[1:])
+    d = c[1] - c[0]
+    X, Y = jnp.meshgrid(c, c, indexing='ij')
+
+    Z = z_fn(X, Y)
+
+    grad_z = jax.grad(z_fn, argnums=(0, 1))            # -> (dz/dx, dz/dy)
+    gx, gy = jax.vmap(grad_z)(X.ravel(), Y.ravel())    # each (N*N,)
+    metric = jnp.sqrt(1.0 + gx**2 + gy**2).reshape(X.shape)
+
+    area = d * d * metric * mask_fn(X, Y, r_max)
+
+    pts = jnp.stack([X, Y, Z], axis=-1).reshape(-1, 3)
+    return pts, area.ravel()
+
+# --------- Plotting surfaces ------------
+
+def plot_surface(pts, area, scale=1e3, unit='mm', equal_z=True,
+                 elev=22, azim=-60, cmap='viridis', ax=None):
+    """Inspect the surface produced by make_surface()."""
+    N = int(round(np.sqrt(pts.shape[0])))
+    P = np.asarray(pts).reshape(N, N, 3)
+    X, Y, Z = P[..., 0], P[..., 1], P[..., 2]
+
+    Z = np.where(np.asarray(area).reshape(N, N) > 0, Z, np.nan)  # mask
+
+    if ax is None:
+        fig = plt.figure(figsize=(9, 7))
+        ax = fig.add_subplot(111, projection='3d')
+
+    ax.plot_surface(X * scale, Y * scale, Z * scale,
+                    cmap=cmap, linewidth=0, antialiased=True,
+                    rstride=2, cstride=2)
+
+    ax.set_xlabel(f'x ({unit})'); ax.set_ylabel(f'y ({unit})')
+    ax.set_zlabel(f'z ({unit})')
+    ax.set_box_aspect((1, 1, 1))
+
+    span = max(np.ptp(X), np.ptp(Y)) * scale / 2
+    ax.set_xlim(-span, span); ax.set_ylim(-span, span)
+    if equal_z:
+        zc = np.nanmean(Z) * scale
+        ax.set_zlim(zc - span, zc + span)
+
+    ax.view_init(elev=elev, azim=azim)
+    return ax
+
+pts, w = make_surface(partial(z_trapz, a=0.5e-3, m=0.4), r_max=3e-3)
+plot_surface(pts, w)
+
+# %%
 
 def alpha(t, p):
     """scalar t -> (3,) tip position"""
-    A, lam, f = p['A'], p['lam'], p['f']
+    A, lam, f = p['A'], p['lam'], p['f_modes']
     disp = jnp.sum(A * jnp.exp(-lam * t) * jnp.sin(2*jnp.pi * f * t))
     x = disp + p['p_o']
     z = p['p_d'] + p['r_tine'] - jnp.sqrt(
@@ -125,23 +183,46 @@ def epsilon(t, p, pts, w, chunk=256):
     out = jax.lax.map(jax.vmap(g), t_blk)    # (n_chunks, chunk)
     return -out.reshape(-1)[:T]
 
+@partial(jax.jit, static_argnames=('fs',))
+def RLC(sig, p, fs=48000.0):
+    """Resonant 2nd-order lowpass. Differentiable w.r.t. sig, f, Q."""
+    # pre-warped analogue frequency (bilinear transform)
+    f, Q = p["f_filter"], p["Q_filter"]
+    w0 = 2.0 * fs * jnp.tan(jnp.pi * f / fs)
+    K, K2 = w0 / (2.0 * fs), (w0 / (2.0 * fs))**2
+
+    norm = 1.0 + K/Q + K2
+    b = jnp.array([K2, 2.0*K2, K2]) / norm
+    a1 = 2.0 * (K2 - 1.0) / norm
+    a2 = (1.0 - K/Q + K2) / norm
+
+    def step(state, xn):
+        x1, x2, y1, y2 = state
+        yn = b[0]*xn + b[1]*x1 + b[2]*x2 - a1*y1 - a2*y2
+        return (xn, x1, yn, y1), yn
+
+    _, y = jax.lax.scan(step, (0.0, 0.0, 0.0, 0.0), sig)
+    return y
+
 # Example
-pts, w = make_surface(r_max=3e-3)
-ratios = jnp.array([0.68, 1.0, 7.11, 20.25])
+ratios = jnp.array([0.51, 1.0, 7.11, 20.25])
 f_0 = 440
 p = dict(
-    A=jnp.array([0.5, 1.0, 0.2, 0.1]) * 1e-4, 
-    lam=jnp.array([3, 1, 10, 20]),
-    f=f_0 * ratios, 
+    A=jnp.array([0.1, 1.0, 0.1, 0.06]) * 1e-5, 
+    lam=jnp.array([40, 1, 40, 60]),
+    f_modes=f_0 * ratios, 
     p_d=1e-3, 
-    p_o=3e-4,
+    p_o=5e-4,
     r_tine=10e-2,
-    gamma=1.0)
+    gamma=1.0,
+    f_filter=5e3,
+    Q_filter=2.0)
 
 fs = 48000.0
 l = 2
 t   = jnp.arange(0, l*fs) / fs
 eps = epsilon(t, p, pts, w)
+eps = RLC(eps, p, fs)
 
 # %%
 # Plot results
