@@ -111,6 +111,17 @@ def make_surface(z_fn, N=128, r_max=2e-3, mask_fn=disc_mask):
     pts = jnp.stack([X, Y, Z], axis=-1).reshape(-1, 3)
     return pts, area.ravel()
 
+
+def drop_masked(pts, area):
+    """Discard the points the mask zeroed.
+
+    They cost a full distance evaluation each but contribute nothing (~21% of
+    the grid for a disc).  Must run outside jit -- boolean indexing needs a
+    static shape -- and after plot_surface, which wants the full N x N grid.
+    """
+    keep = np.asarray(area) > 0
+    return pts[keep], area[keep]
+
 # --------- Plotting surfaces ------------
 
 def plot_surface(pts, area, scale=1e3, unit='mm', equal_z=True,
@@ -145,6 +156,7 @@ def plot_surface(pts, area, scale=1e3, unit='mm', equal_z=True,
 
 pts, w = make_surface(partial(z_trapz, a=0.5e-3, m=0.4), r_max=3e-3)
 plot_surface(pts, w)
+pts, w = drop_masked(pts, w)        # idempotent, so re-running the cell is safe
 
 # %%
 
@@ -155,15 +167,6 @@ def alpha(t, p):
     x = disp + p['p_o']
     z = p['p_d']
     return jnp.array([x, 0.0, z])
-
-def B_z(a, pts, w):
-    """(3,) tip position -> scalar axial field at the tip"""
-    d  = a - pts                              # (M, 3)
-    r3 = jnp.sum(d*d, axis=-1)**1.5
-    return jnp.dot(d[:, 2] / r3, w)
-
-def Psi(a, pts, w):
-    return B_z(a, pts, w)**2
 
 # ---------- Psi lookup table ----------
 # With y' = 0 and z' = p_d fixed, alpha traces a straight line in x, so Psi
@@ -179,6 +182,15 @@ def psi_table(p, pts, w, n=4096, pad=1.5, chunk=256):
     a discretisation choice and is held constant (stop_gradient); the tabulated
     *values* stay differentiable w.r.t. p_d and the surface (pts, w), so
     the table may be rebuilt inside a fitting step.
+
+    Specialised to y' = 0: with the surface fixed, everything in the sum but
+    (x - x_j)^2 is independent of x, so with num_j = w_j * dz_j and
+    c_j = y_j^2 + dz_j^2 (dz_j = p_d - z_j) built once in O(M),
+
+        Psi(x) = ( sum_j num_j / ((x - x_j)^2 + c_j)^(3/2) )^2
+
+    which is the discretised  Psi = (int_S sigma (z'-z)/||a-b||^3 db)^2  of the
+    derivation above, dropped from O(n*M) to O(M) setup + O(n*M) muls.
     """
     span = pad * jnp.sum(jnp.abs(p['A']))
     x0, x1 = jax.lax.stop_gradient(
@@ -186,7 +198,15 @@ def psi_table(p, pts, w, n=4096, pad=1.5, chunk=256):
     dx = (x1 - x0) / (n - 1)
     xs = x0 + dx * jnp.arange(n)
 
-    psi_at = lambda x: Psi(jnp.array([x, 0.0, p['p_d']]), pts, w)
+    xj  = pts[:, 0]
+    dz  = p['p_d'] - pts[:, 2]                        # (M,)
+    num = w * dz                                      # numerator weight
+    c   = pts[:, 1]**2 + dz**2                        # y^2 + dz^2
+
+    def psi_at(x):
+        r = (x - xj)**2 + c
+        # rsqrt(r^3) rather than r**1.5: pow lowers ~5x slower than mul+rsqrt
+        return jnp.sum(num * jax.lax.rsqrt(r * r * r))**2
 
     m = (-n) % chunk                                  # pad up to a chunk
     xs_pad = jnp.concatenate([xs, jnp.full(m, x0, xs.dtype)])
