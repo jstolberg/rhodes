@@ -50,7 +50,6 @@
 # real-time synthesis of the fitted instrument.
 # 
 # **Missing elements:**
-# - Model $\alpha$ on an arc $z' = f(x')$ instead of fixed $z'$.
 # - The coil implements a RLC circuit, implicitly implying a resonant,
 # low-pass filter, which could be modelled too.
 
@@ -246,7 +245,10 @@ def RLC(sig, p, fs=48000.0):
         yn = b[0]*xn + b[1]*x1 + b[2]*x2 - a1*y1 - a2*y2
         return (xn, x1, yn, y1), yn
 
-    _, y = jax.lax.scan(step, (0.0, 0.0, 0.0, 0.0), sig)
+    # unroll: the body is ~10 flops, so an un-unrolled scan spends all its time
+    # on XLA loop-carry overhead (~950x slower here).  8 is the sweet spot;
+    # 16/32 lose again to code bloat.
+    _, y = jax.lax.scan(step, (0.0, 0.0, 0.0, 0.0), sig, unroll=8)
     return y
 
 # Example
@@ -264,11 +266,11 @@ p = dict(
     Q_filter=2.0)
 
 fs = 48000.0
-l = 2
+l = 4
 t   = jnp.arange(0, l*fs) / fs
 tab = psi_table(p, pts, w)          # rebuild whenever p_d, gamma or S change
 eps = epsilon(t, p, tab)
-# eps = RLC(eps, p, fs)
+eps = RLC(eps, p, fs)
 
 # %%
 # Plot results
