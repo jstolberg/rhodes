@@ -162,8 +162,8 @@ def B_z(a, pts, w):
     r3 = jnp.sum(d*d, axis=-1)**1.5
     return jnp.dot(d[:, 2] / r3, w)
 
-def Psi(a, pts, w, gamma):
-    return gamma * B_z(a, pts, w)**2
+def Psi(a, pts, w):
+    return B_z(a, pts, w)**2
 
 # ---------- Psi lookup table ----------
 # With y' = 0 and z' = p_d fixed, alpha traces a straight line in x, so Psi
@@ -177,7 +177,7 @@ def psi_table(p, pts, w, n=4096, pad=1.5, chunk=256):
     The grid is centred on p_o and spans pad * sum|A| either side, i.e. the
     range the tip can reach if every mode peaks at once.  Grid *placement* is
     a discretisation choice and is held constant (stop_gradient); the tabulated
-    *values* stay differentiable w.r.t. p_d, gamma and the surface (pts, w), so
+    *values* stay differentiable w.r.t. p_d and the surface (pts, w), so
     the table may be rebuilt inside a fitting step.
     """
     span = pad * jnp.sum(jnp.abs(p['A']))
@@ -186,7 +186,7 @@ def psi_table(p, pts, w, n=4096, pad=1.5, chunk=256):
     dx = (x1 - x0) / (n - 1)
     xs = x0 + dx * jnp.arange(n)
 
-    psi_at = lambda x: Psi(jnp.array([x, 0.0, p['p_d']]), pts, w, p['gamma'])
+    psi_at = lambda x: Psi(jnp.array([x, 0.0, p['p_d']]), pts, w)
 
     m = (-n) % chunk                                  # pad up to a chunk
     xs_pad = jnp.concatenate([xs, jnp.full(m, x0, xs.dtype)])
@@ -252,23 +252,19 @@ def RLC(sig, p, fs=48000.0):
     return y
 
 # Example
-ratios = jnp.array([1.0])
-f_0 = 440
 p = dict(
-    A=jnp.array([1.0]) * 1e-3, 
-    lam=jnp.array([1]),
-    f_modes=f_0 * ratios, 
-    p_d=1e-3, 
-    p_o=5e-4,
-    r_tine=10e-2,
-    gamma=1.0,
+    A=jnp.array([0.01, 1.0]) * 5e-3, 
+    lam=jnp.array([0.1, 1.0]),
+    f_modes=jnp.array([60.0, 440.0]), 
+    p_d=7e-3, 
+    p_o=2e-3,
     f_filter=3e3,
     Q_filter=2.0)
 
 fs = 48000.0
 l = 4
 t   = jnp.arange(0, l*fs) / fs
-tab = psi_table(p, pts, w)          # rebuild whenever p_d, gamma or S change
+tab = psi_table(p, pts, w)          # rebuild whenever p_d or S change
 eps = epsilon(t, p, tab)
 eps = RLC(eps, p, fs)
 
