@@ -169,70 +169,130 @@ def alpha(t, p):
     return jnp.array([x, 0.0, z])
 
 # ---------- Psi lookup table ----------
-# With y' = 0 and z' = p_d fixed, alpha traces a straight line in x, so Psi
-# is a function of the single scalar x.  The O(M) surface sum can therefore be
-# hoisted out of the per-sample loop: tabulate once, then interpolate.
+# With y' = 0, alpha only ever visits the (x, z) plane, so Psi is a function of
+# two scalars and the O(M) surface sum can be hoisted out of the per-sample
+# loop entirely: tabulate once, then interpolate.  Tabulating z as well as x
+# turns p_d into a runtime parameter rather than a rebuild.  The table is keyed
+# on the alpha position itself, so an arc z' = f(x') would need no change here
+# beyond alpha() returning the varying z.
 
-@partial(jax.jit, static_argnames=('n', 'chunk'))
-def psi_table(p, pts, w, n=4096, pad=1.5, chunk=256):
-    """Precompute Psi on a uniform x-grid -> (x0, dx, values).
+@partial(jax.jit, static_argnames=('disp_max', 'po_max', 'n', 'n_pd', 'chunk'))
+def psi_table(p, pts, w, disp_max, po_max, pd_range=None,
+              n=4096, n_pd=1, pad=1.05, chunk=256):
+    """Precompute Psi on a uniform (x, z) grid -> (x0, dx, z0, dz, V).
 
-    The grid is centred on p_o and spans pad * sum|A| either side, i.e. the
-    range the tip can reach if every mode peaks at once.  Grid *placement* is
-    a discretisation choice and is held constant (stop_gradient); the tabulated
-    *values* stay differentiable w.r.t. p_d and the surface (pts, w), so
-    the table may be rebuilt inside a fitting step.
+    V has shape (n_pd, n_x): row = z (i.e. p_d), column = x.
+
+    disp_max and po_max are *promises* about the run: |disp| <= disp_max (its
+    exact bound is sum|A|, every mode peaking in phase) and 0 <= p_o <= po_max.
+    Both are static, so the grid never shifts as A moves during a fit.
+
+    Resolution is set by n over the displacement span alone,
+
+        dx = 2 * pad * disp_max / (n - 1)
+
+    and the offset is covered by *adding* columns at that same dx rather than
+    stretching n across a wider range -- so a generous po_max costs memory, not
+    accuracy.  x runs from -pad*disp_max up past pad*disp_max + po_max (plus 2
+    cells for the Catmull-Rom stencil), which p_o >= 0 makes one-sided.
+
+    n_pd = 1 (default) pins z at p['p_d'] (pd_range is ignored) and costs
+    exactly what a 1-D table costs -- psi_lookup drops the z axis at trace
+    time.  p_d then may NOT be changed without a rebuild.  For a
+    runtime-adjustable p_d pass n_pd >= 4 and an explicit pd_range; over the
+    physical 1.5-3.5 mm voicing range n_pd = 48 holds the z error to ~1e-5
+    (96 -> ~2e-7).  Keep pd_range tight: a uniform z grid stretched over a wide
+    range fits the near end badly, where Psi curves hardest.  The x axis is
+    never the limit here -- it stays at ~1e-10 even at p_d = 1.5 mm.
+
+    Grid *placement* is a discretisation choice and is held constant
+    (stop_gradient); the tabulated *values* stay differentiable w.r.t. the
+    surface (pts, w), so the table may be rebuilt inside a fitting step.
 
     Specialised to y' = 0: with the surface fixed, everything in the sum but
     (x - x_j)^2 is independent of x, so with num_j = w_j * dz_j and
-    c_j = y_j^2 + dz_j^2 (dz_j = p_d - z_j) built once in O(M),
+    c_j = y_j^2 + dz_j^2 (dz_j = z - z_j) built once per row in O(M),
 
-        Psi(x) = ( sum_j num_j / ((x - x_j)^2 + c_j)^(3/2) )^2
+        Psi(x, z) = ( sum_j num_j / ((x - x_j)^2 + c_j)^(3/2) )^2
 
     which is the discretised  Psi = (int_S sigma (z'-z)/||a-b||^3 db)^2  of the
-    derivation above, dropped from O(n*M) to O(M) setup + O(n*M) muls.
+    derivation above.
     """
-    span = pad * jnp.sum(jnp.abs(p['A']))
-    x0, x1 = jax.lax.stop_gradient(
-        jnp.array([p['p_o'] - span, p['p_o'] + span]))
-    dx = (x1 - x0) / (n - 1)
-    xs = x0 + dx * jnp.arange(n)
+    half = pad * disp_max                             # static
+    dx   = 2.0 * half / (n - 1)                       # static
+    n_x  = n + int(np.ceil(po_max / dx)) + 2          # + stencil margin
+    xs   = -half + dx * jnp.arange(n_x)
 
-    xj  = pts[:, 0]
-    dz  = p['p_d'] - pts[:, 2]                        # (M,)
-    num = w * dz                                      # numerator weight
-    c   = pts[:, 1]**2 + dz**2                        # y^2 + dz^2
+    if n_pd == 1:                                     # pinned; pd_range moot
+        z0, z1 = p['p_d'], p['p_d']
+    elif pd_range is None:
+        raise ValueError("n_pd > 1 needs an explicit pd_range")
+    else:
+        z0, z1 = pd_range
+    z0 = jax.lax.stop_gradient(jnp.asarray(z0, xs.dtype))
+    dz = (jax.lax.stop_gradient(jnp.asarray(z1, xs.dtype)) - z0) / (n_pd - 1) \
+         if n_pd > 1 else jnp.asarray(1.0, xs.dtype)
+    zs = z0 + dz * jnp.arange(n_pd)
 
-    def psi_at(x):
-        r = (x - xj)**2 + c
-        # rsqrt(r^3) rather than r**1.5: pow lowers ~5x slower than mul+rsqrt
-        return jnp.sum(num * jax.lax.rsqrt(r * r * r))**2
+    xj, yj2, zj = pts[:, 0], pts[:, 1]**2, pts[:, 2]
 
-    m = (-n) % chunk                                  # pad up to a chunk
-    xs_pad = jnp.concatenate([xs, jnp.full(m, x0, xs.dtype)])
-    vals = jax.lax.map(jax.vmap(psi_at), xs_pad.reshape(-1, chunk))
+    m = (-n_x) % chunk                                # pad up to a chunk
+    xs_pad = jnp.concatenate([xs, jnp.full(m, xs[0], xs.dtype)])
 
-    return x0, dx, vals.reshape(-1)[:n]
+    def row(z):
+        d   = z - zj                                  # (M,)
+        num = w * d                                   # numerator weight
+        c   = yj2 + d**2                              # y^2 + dz^2
+
+        def psi_at(x):
+            r = (x - xj)**2 + c
+            # rsqrt(r^3) rather than r**1.5: pow lowers ~5x slower than mul+rsqrt
+            return jnp.sum(num * jax.lax.rsqrt(r * r * r))**2
+
+        v = jax.lax.map(jax.vmap(psi_at), xs_pad.reshape(-1, chunk))
+        return v.reshape(-1)[:n_x]
+
+    return -half, dx, z0, dz, jax.lax.map(row, zs)
+
+
+def _catmull(p0, p1, p2, p3, u):
+    """Cubic through p1 (u=0) and p2 (u=1), tangents from p0 and p3."""
+    return 0.5 * (2.0*p1
+                  + (-p0 + p2) * u
+                  + (2.0*p0 - 5.0*p1 + 4.0*p2 - p3) * u**2
+                  + (-p0 + 3.0*p1 - 3.0*p2 + p3) * u**3)
+
+
+def _cell(s, n):
+    """grid coordinate -> (base index with a valid 4-point stencil, fraction)"""
+    s = jnp.clip(s, 0.0, n - 1.0)
+    i = jnp.clip(jnp.floor(s).astype(int), 1, n - 3)   # integer -> no tangent
+    return i, s - i                                    # so du/ds = 1
 
 
 def psi_lookup(a, table):
     """(..., 3) tip positions -> (...) Psi, read off the table.
 
-    Catmull-Rom cubic, so the result is C1 in x: unlike jnp.interp, its
-    derivative is continuous, which is what epsilon = -dPsi/dt needs.
+    Catmull-Rom, so the result is C1 in both axes: unlike jnp.interp, its
+    derivative is continuous, which is what epsilon = -dPsi/dt needs -- in z as
+    well as x, since a moving p_d contributes dPsi/dz * z_dot to the voltage.
+
+    With a single z row the z axis is dropped entirely (4 gathers, not 16).
+    V.shape is static, so that costs nothing at runtime.
     """
-    x0, dx, v = table
-    n = v.shape[0]
+    x0, dx, z0, dz, V = table
+    n_z, n_x = V.shape
 
-    s = jnp.clip((a[..., 0] - x0) / dx, 0.0, n - 1.0)
-    i = jnp.clip(jnp.floor(s).astype(int), 1, n - 3)   # integer -> no tangent
-    u = s - i                                          # so du/dx = 1/dx
+    ix, ux = _cell((a[..., 0] - x0) / dx, n_x)
 
-    p0, p1, p2, p3 = v[i-1], v[i], v[i+1], v[i+2]
-    return 0.5 * (2.0*p1
-                  + (-p0 + p2) * u
-                  + (2.0*p0 - 5.0*p1 + 4.0*p2 - p3) * u**2
-                  + (-p0 + 3.0*p1 - 3.0*p2 + p3) * u**3)
+    if n_z == 1:                                       # p_d pinned, no z axis
+        v = V[0]
+        return _catmull(v[ix-1], v[ix], v[ix+1], v[ix+2], ux)
+
+    iz, uz = _cell((a[..., 2] - z0) / dz, n_z)
+    rows = [_catmull(V[iz+k, ix-1], V[iz+k, ix], V[iz+k, ix+1], V[iz+k, ix+2], ux)
+            for k in (-1, 0, 1, 2)]
+    return _catmull(*rows, uz)
 
 
 @jax.jit
@@ -273,18 +333,26 @@ def RLC(sig, p, fs=48000.0):
 
 # Example
 p = dict(
-    A=jnp.array([0.01, 1.0]) * 5e-3, 
+    A=jnp.array([0.01, 1.0]) * 1e-3,    # ~1 mm total tip displacement
     lam=jnp.array([0.1, 1.0]),
     f_modes=jnp.array([60.0, 440.0]), 
-    p_d=7e-3, 
-    p_o=2e-3,
+    p_d=2.5e-3,
+    p_o=1.2e-3,
     f_filter=3e3,
     Q_filter=2.0)
 
 fs = 48000.0
 l = 4
 t   = jnp.arange(0, l*fs) / fs
-tab = psi_table(p, pts, w)          # rebuild whenever p_d or S change
+
+# Promises the table is built against: p_o may roam [0, po_max] with no rebuild,
+# disp_max is the exact reach of the modal sum (all modes peaking in phase).
+disp_max = float(jnp.sum(jnp.abs(p['A'])))
+po_max   = 4e-3
+pd_range = (1.5e-3, 3.5e-3)   # physical voicing range; pass with n_pd>=4 to
+                              # make p_d adjustable too (n_pd=48 -> ~1e-5)
+
+tab = psi_table(p, pts, w, disp_max, po_max)   # n_pd=1: p_d pinned, rebuild to change it
 eps = epsilon(t, p, tab)
 eps = RLC(eps, p, fs)
 
@@ -353,11 +421,12 @@ secs = 6
 t_bench = jnp.arange(0, secs * fs) / fs
 print(f"{secs} s @ {fs:.0f} Hz = {t_bench.shape[0]} samples")
 
-tab_b = timed("psi_table", lambda: psi_table(p, pts, w))
+tab_b = timed("psi_table", lambda: psi_table(p, pts, w, disp_max, po_max))
 eps_b = timed("epsilon",   lambda: epsilon(t_bench, p, tab_b))
 sig_b = timed("RLC",       lambda: RLC(eps_b, p, fs))
 
-full = lambda: RLC(epsilon(t_bench, p, psi_table(p, pts, w)), p, fs)
+full = lambda: RLC(epsilon(t_bench, p, psi_table(p, pts, w, disp_max, po_max)),
+                   p, fs)
 jax.block_until_ready(full())                      # warm the cache first
 t0 = time.perf_counter()
 for _ in range(3): jax.block_until_ready(full())
