@@ -308,6 +308,40 @@ def apply_envelope(x, fs, attack=0.005, release=0.020):
 
 x = apply_envelope(x, fs, attack = 0.015)
 
-Audio(x, rate=fs) 
+Audio(x, rate=fs)
+
+# %%
+# Timing a full run: table -> epsilon -> RLC
+#
+# JAX dispatches asynchronously, so block_until_ready is required or you time
+# the queue rather than the work.  "cold" includes tracing + XLA compilation,
+# which is cached per *input shape*: changing secs pays it again.  "warm" is
+# what a fitting loop actually costs per step.
+
+import time
+
+def timed(label, fn, n=3):
+    t0 = time.perf_counter(); out = fn(); jax.block_until_ready(out)
+    cold = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    for _ in range(n): out = fn(); jax.block_until_ready(out)
+    warm = (time.perf_counter() - t0) / n
+    print(f"  {label:12s} cold {cold:7.3f}s   warm {warm:7.4f}s")
+    return out
+
+secs = 6
+t_bench = jnp.arange(0, secs * fs) / fs
+print(f"{secs} s @ {fs:.0f} Hz = {t_bench.shape[0]} samples")
+
+tab_b = timed("psi_table", lambda: psi_table(p, pts, w))
+eps_b = timed("epsilon",   lambda: epsilon(t_bench, p, tab_b))
+sig_b = timed("RLC",       lambda: RLC(eps_b, p, fs))
+
+full = lambda: RLC(epsilon(t_bench, p, psi_table(p, pts, w)), p, fs)
+jax.block_until_ready(full())                      # warm the cache first
+t0 = time.perf_counter()
+for _ in range(3): jax.block_until_ready(full())
+dt = (time.perf_counter() - t0) / 3
+print(f"  {'END-TO-END':12s}              warm {dt:7.4f}s   -> {secs/dt:6.1f}x realtime")
 
 # %%
