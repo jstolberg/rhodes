@@ -73,9 +73,6 @@ jax.config.update("jax_enable_x64", True)
 
 print("jax", jax.__version__, "devices:", jax.devices())
 
-# %% [markdown]
-# # Example: Guitar pickup, $z(x,y) = 0$
-# 
 
 # %%
 # Pickup surfaces
@@ -157,8 +154,7 @@ def alpha(t, p):
     A, lam, f = p['A'], p['lam'], p['f_modes']
     disp = jnp.sum(A * jnp.exp(-lam * t) * jnp.sin(2*jnp.pi * f * t))
     x = disp + p['p_o']
-    z = p['p_d'] + p['r_tine'] - jnp.sqrt(
-            jnp.maximum(p['r_tine']**2 - disp**2, 0.0))
+    z = p['p_d']
     return jnp.array([x, 0.0, z])
 
 def B_z(a, pts, w):
@@ -170,18 +166,67 @@ def B_z(a, pts, w):
 def Psi(a, pts, w, gamma):
     return gamma * B_z(a, pts, w)**2
 
-@partial(jax.jit, static_argnames=('chunk',))
-def epsilon(t, p, pts, w, chunk=256):
-    psi_of_t = lambda tt: Psi(alpha(tt, p), pts, w, p['gamma'])
-    g = jax.grad(psi_of_t)
+# ---------- Psi lookup table ----------
+# With y' = 0 and z' = p_d fixed, alpha traces a straight line in x, so Psi
+# is a function of the single scalar x.  The O(M) surface sum can therefore be
+# hoisted out of the per-sample loop: tabulate once, then interpolate.
 
-    T = t.shape[0]
-    pad = (-T) % chunk                       # pad up to a multiple of chunk
-    t_pad = jnp.concatenate([t, jnp.zeros(pad, t.dtype)])
-    t_blk = t_pad.reshape(-1, chunk)         # (n_chunks, chunk)
+@partial(jax.jit, static_argnames=('n', 'chunk'))
+def psi_table(p, pts, w, n=4096, pad=1.5, chunk=256):
+    """Precompute Psi on a uniform x-grid -> (x0, dx, values).
 
-    out = jax.lax.map(jax.vmap(g), t_blk)    # (n_chunks, chunk)
-    return -out.reshape(-1)[:T]
+    The grid is centred on p_o and spans pad * sum|A| either side, i.e. the
+    range the tip can reach if every mode peaks at once.  Grid *placement* is
+    a discretisation choice and is held constant (stop_gradient); the tabulated
+    *values* stay differentiable w.r.t. p_d, gamma and the surface (pts, w), so
+    the table may be rebuilt inside a fitting step.
+    """
+    span = pad * jnp.sum(jnp.abs(p['A']))
+    x0, x1 = jax.lax.stop_gradient(
+        jnp.array([p['p_o'] - span, p['p_o'] + span]))
+    dx = (x1 - x0) / (n - 1)
+    xs = x0 + dx * jnp.arange(n)
+
+    psi_at = lambda x: Psi(jnp.array([x, 0.0, p['p_d']]), pts, w, p['gamma'])
+
+    m = (-n) % chunk                                  # pad up to a chunk
+    xs_pad = jnp.concatenate([xs, jnp.full(m, x0, xs.dtype)])
+    vals = jax.lax.map(jax.vmap(psi_at), xs_pad.reshape(-1, chunk))
+
+    return x0, dx, vals.reshape(-1)[:n]
+
+
+def psi_lookup(a, table):
+    """(..., 3) tip positions -> (...) Psi, read off the table.
+
+    Catmull-Rom cubic, so the result is C1 in x: unlike jnp.interp, its
+    derivative is continuous, which is what epsilon = -dPsi/dt needs.
+    """
+    x0, dx, v = table
+    n = v.shape[0]
+
+    s = jnp.clip((a[..., 0] - x0) / dx, 0.0, n - 1.0)
+    i = jnp.clip(jnp.floor(s).astype(int), 1, n - 3)   # integer -> no tangent
+    u = s - i                                          # so du/dx = 1/dx
+
+    p0, p1, p2, p3 = v[i-1], v[i], v[i+1], v[i+2]
+    return 0.5 * (2.0*p1
+                  + (-p0 + p2) * u
+                  + (2.0*p0 - 5.0*p1 + 4.0*p2 - p3) * u**2
+                  + (-p0 + 3.0*p1 - 3.0*p2 + p3) * u**3)
+
+
+@jax.jit
+def epsilon(t, p, table):
+    """time samples -> induced voltage -dPsi/dt, via the Psi table.
+
+    Psi is scalar->scalar in t, so forward mode costs ~2x a primal eval at O(1)
+    memory.  With the O(M) surface sum hoisted into the table there is nothing
+    left to chunk, so the whole signal goes through one vmap.
+    """
+    psi_of_t = lambda tt: psi_lookup(alpha(tt, p), table)
+    dpsi = lambda tt: jax.jvp(psi_of_t, (tt,), (jnp.ones_like(tt),))[1]
+    return -jax.vmap(dpsi)(t)
 
 @partial(jax.jit, static_argnames=('fs',))
 def RLC(sig, p, fs=48000.0):
@@ -205,24 +250,25 @@ def RLC(sig, p, fs=48000.0):
     return y
 
 # Example
-ratios = jnp.array([0.51, 1.0, 7.11, 20.25])
+ratios = jnp.array([1.0])
 f_0 = 440
 p = dict(
-    A=jnp.array([0.1, 1.0, 0.1, 0.06]) * 1e-5, 
-    lam=jnp.array([40, 1, 40, 60]),
+    A=jnp.array([1.0]) * 1e-3, 
+    lam=jnp.array([1]),
     f_modes=f_0 * ratios, 
     p_d=1e-3, 
     p_o=5e-4,
     r_tine=10e-2,
     gamma=1.0,
-    f_filter=5e3,
+    f_filter=3e3,
     Q_filter=2.0)
 
 fs = 48000.0
 l = 2
 t   = jnp.arange(0, l*fs) / fs
-eps = epsilon(t, p, pts, w)
-eps = RLC(eps, p, fs)
+tab = psi_table(p, pts, w)          # rebuild whenever p_d, gamma or S change
+eps = epsilon(t, p, tab)
+# eps = RLC(eps, p, fs)
 
 # %%
 # Plot results
@@ -248,7 +294,21 @@ plt.tight_layout(); plt.show()
 
 # %%
 x = np.asarray(eps, dtype=np.float64)
-x = x / (np.max(np.abs(x)) + 1e-12)   # normalise to ±1
+x = x / (np.max(np.abs(x)) + 1e-12) *0.0001  # normalise to ±1
+
+def apply_envelope(x, fs, attack=0.005, release=0.020):
+    """Raised-cosine fade in/out to remove start click and end truncation."""
+    x = x.copy()
+    n_a, n_r = int(attack * fs), int(release * fs)
+
+    if n_a > 0:
+        x[:n_a] *= 0.5 * (1 - np.cos(np.pi * np.linspace(0, 1, n_a)))
+    if n_r > 0:
+        x[-n_r:] *= 0.5 * (1 + np.cos(np.pi * np.linspace(0, 1, n_r)))
+
+    return x
+
+x = apply_envelope(x, fs, attack = 0.015)
 
 Audio(x, rate=fs) 
 
