@@ -159,15 +159,76 @@ plot_surface(pts, w)
 pts, w = drop_masked(pts, w)        # idempotent, so re-running the cell is safe
 
 # %%
+def calc_tau(vel, p):
+    """Compute contact time for a given velocity (0-1)"""
+    tau_0, beta = p['tau_0'], p['beta']
+    return tau_0 * jnp.pow(vel, -beta)
 
-def alpha(t, p):
-    """scalar t -> (3,) tip position"""
-    A, lam, f = p['A'], p['lam'], p['f_modes']
-    disp = jnp.sum(A * jnp.exp(-lam * t) * jnp.sin(2*jnp.pi * f * t))
+def hammer(t, f, c, F_0, tau, eps=1e-9):
+    """Tine displacement during contact, 0 <= t <= tau, for mode f.
+    t: (N,) or scalar.  f, c: (M,).  Returns (N, M)."""
+    t = jnp.asarray(t)[..., None]
+    f = jnp.atleast_1d(f)
+    c = jnp.atleast_1d(c)
+
+    Om   = 2*jnp.pi/tau
+    w    = 2*jnp.pi*f
+    den  = w**2 - Om**2
+    safe = jnp.where(jnp.abs(den) < eps, 1.0, den)
+
+    x = (F_0/2)*((1 - jnp.cos(w*t))/w**2            # (N,1)*(M,) -> (N,M)
+                 - (jnp.cos(Om*t) - jnp.cos(w*t))/safe) * c
+    return jnp.where(jnp.abs(den) < eps, 0.0, x)    # (M,) mask over (N,M)
+
+def hammer2free(f, c, F_0, tau, eps=1e-9):
+    """Signed amplitude and phase of q(t) = A*sin(w*(t-tau) + phi) for t > tau."""
+    Om  = 2*jnp.pi/tau
+    w   = 2*jnp.pi*f
+    den = w**2 - Om**2
+    safe = jnp.where(jnp.abs(den) < eps, 1.0, den)
+    K = -F_0 * Om**2 / (2 * w**2 * safe)
+    A = 2*K*jnp.sin(w*tau/2) * c
+    phi = w*tau/2
+    return jnp.where(jnp.abs(den) < eps, 0.0, A), phi
+
+def alpha(t, p, vel=1.0):
+    """scalar t -> (3,) tip position
+
+    Forced response under the hammer for 0 <= t <= tau, then the free damped
+    oscillation with the amplitude and phase hammer2free hands over.
+    """
+    c, lam, f = p['c'], p['lam'], p['f_modes']
+    tau = calc_tau(vel, p)
+    F_0 = 2*vel/tau                 # impulse F_0*tau/2 = vel
+
+    q_c = hammer(t, f, c, F_0, tau) # Contact displacement
+    A, phi = hammer2free(f, c, F_0, tau) # Parameter handover
+    q_f = A * jnp.exp(-lam * (t - tau)) * jnp.sin(2*jnp.pi * f * (t - tau) + phi) #Free displacement
+
+    disp = jnp.sum(jnp.where(t < tau, q_c, q_f))
     x = disp + p['p_o']
     z = p['p_d']
     return jnp.array([x, 0.0, z])
 
+def disp_bound(p, vel=1.0, n=4001):
+    """max |disp| over the whole note -> a static float for psi_table.
+
+    Free part: sum |A| (all modes peaking in phase).  Contact part: a stiff mode
+    (f >> 1/tau) is pushed quasi-statically to ~F_0/w^2, far beyond the free
+    amplitude it is left with, so the contact window is scanned numerically.
+    Evaluated at the loudest velocity: displacement grows with vel in every
+    regime (beta >= 0), so vel=1 bounds the whole range.
+    """
+    f, c = p['f_modes'], p['c']
+    tau = calc_tau(vel, p)
+    F_0 = 2*vel/tau
+    A, _ = hammer2free(f, c, F_0, tau)
+    tt = jnp.linspace(0.0, tau, n)
+    contact = jnp.abs(hammer(tt, f, c, F_0, tau).sum(1)).max()
+    return float(jnp.maximum(jnp.sum(jnp.abs(A)), contact))
+
+
+# %%
 # ---------- Psi lookup table ----------
 # With y' = 0, alpha only ever visits the (x, z) plane, so Psi is a function of
 # two scalars and the O(M) surface sum can be hoisted out of the per-sample
@@ -296,46 +357,24 @@ def psi_lookup(a, table):
 
 
 @jax.jit
-def epsilon(t, p, table):
+def epsilon(t, p, table, vel=1.0):
     """time samples -> induced voltage -dPsi/dt, via the Psi table.
 
     Psi is scalar->scalar in t, so forward mode costs ~2x a primal eval at O(1)
     memory.  With the O(M) surface sum hoisted into the table there is nothing
     left to chunk, so the whole signal goes through one vmap.
     """
-    psi_of_t = lambda tt: psi_lookup(alpha(tt, p), table)
+    psi_of_t = lambda tt: psi_lookup(alpha(tt, p, vel), table)
     dpsi = lambda tt: jax.jvp(psi_of_t, (tt,), (jnp.ones_like(tt),))[1]
     return -jax.vmap(dpsi)(t)
 
-@partial(jax.jit, static_argnames=('fs',))
-def RLC(sig, p, fs=48000.0):
-    """Resonant 2nd-order lowpass. Differentiable w.r.t. sig, f, Q."""
-    # pre-warped analogue frequency (bilinear transform)
-    f, Q = p["f_filter"], p["Q_filter"]
-    w0 = 2.0 * fs * jnp.tan(jnp.pi * f / fs)
-    K, K2 = w0 / (2.0 * fs), (w0 / (2.0 * fs))**2
-
-    norm = 1.0 + K/Q + K2
-    b = jnp.array([K2, 2.0*K2, K2]) / norm
-    a1 = 2.0 * (K2 - 1.0) / norm
-    a2 = (1.0 - K/Q + K2) / norm
-
-    def step(state, xn):
-        x1, x2, y1, y2 = state
-        yn = b[0]*xn + b[1]*x1 + b[2]*x2 - a1*y1 - a2*y2
-        return (xn, x1, yn, y1), yn
-
-    # unroll: the body is ~10 flops, so an un-unrolled scan spends all its time
-    # on XLA loop-carry overhead (~950x slower here).  8 is the sweet spot;
-    # 16/32 lose again to code bloat.
-    _, y = jax.lax.scan(step, (0.0, 0.0, 0.0, 0.0), sig, unroll=8)
-    return y
-
 # Example
 p = dict(
-    A=jnp.array([0.01, 1.0]) * 1e-3,    # ~1 mm total tip displacement
+    c=jnp.array([0.005, 1.0]) * 3.06, # per-mode gain; ~1 mm total at vel=1
     lam=jnp.array([0.1, 1.0]),
-    f_modes=jnp.array([60.0, 440.0]), 
+    f_modes=jnp.array([60.0, 440.0]),
+    tau_0=1e-3,                       # contact time at vel=1
+    beta=0.2,                         # tau ~ vel^-beta: 1.6 ms at vel=0.1
     p_d=2.5e-3,
     p_o=1.2e-3,
     f_filter=3e3,
@@ -346,15 +385,14 @@ l = 4
 t   = jnp.arange(0, l*fs) / fs
 
 # Promises the table is built against: p_o may roam [0, po_max] with no rebuild,
-# disp_max is the exact reach of the modal sum (all modes peaking in phase).
-disp_max = float(jnp.sum(jnp.abs(p['A'])))
+# disp_max is the reach of the tine over contact and free decay (see disp_bound).
+disp_max = disp_bound(p)
 po_max   = 4e-3
 pd_range = (1.5e-3, 3.5e-3)   # physical voicing range; pass with n_pd>=4 to
                               # make p_d adjustable too (n_pd=48 -> ~1e-5)
 
 tab = psi_table(p, pts, w, disp_max, po_max)   # n_pd=1: p_d pinned, rebuild to change it
-eps = epsilon(t, p, tab)
-eps = RLC(eps, p, fs)
+eps = epsilon(t, p, tab, vel=0.5)
 
 # %%
 # Plot results
@@ -379,58 +417,13 @@ plt.colorbar(label='dB')
 plt.tight_layout(); plt.show()
 
 # %%
-x = np.asarray(eps, dtype=np.float64)
-x = x / (np.max(np.abs(x)) + 1e-12) *0.0001  # normalise to ±1
+# Fixed gain, referenced to the loudest velocity, so different vel are audible
+# as different loudness rather than being normalised away.  epsilon is in
+# arbitrary units (kappa absorbed) and peaks at ~4e3 for vel=1 with these p.
+# Audio() normalises by default and would undo this -- hence normalize=False.
+gain = 0.8 / float(jnp.abs(epsilon(t, p, tab, vel=1.0)).max())
 
-def apply_envelope(x, fs, attack=0.005, release=0.020):
-    """Raised-cosine fade in/out to remove start click and end truncation."""
-    x = x.copy()
-    n_a, n_r = int(attack * fs), int(release * fs)
-
-    if n_a > 0:
-        x[:n_a] *= 0.5 * (1 - np.cos(np.pi * np.linspace(0, 1, n_a)))
-    if n_r > 0:
-        x[-n_r:] *= 0.5 * (1 + np.cos(np.pi * np.linspace(0, 1, n_r)))
-
-    return x
-
-x = apply_envelope(x, fs, attack = 0.015)
-
-Audio(x, rate=fs)
-
-# %%
-# Timing a full run: table -> epsilon -> RLC
-#
-# JAX dispatches asynchronously, so block_until_ready is required or you time
-# the queue rather than the work.  "cold" includes tracing + XLA compilation,
-# which is cached per *input shape*: changing secs pays it again.  "warm" is
-# what a fitting loop actually costs per step.
-
-import time
-
-def timed(label, fn, n=3):
-    t0 = time.perf_counter(); out = fn(); jax.block_until_ready(out)
-    cold = time.perf_counter() - t0
-    t0 = time.perf_counter()
-    for _ in range(n): out = fn(); jax.block_until_ready(out)
-    warm = (time.perf_counter() - t0) / n
-    print(f"  {label:12s} cold {cold:7.3f}s   warm {warm:7.4f}s")
-    return out
-
-secs = 6
-t_bench = jnp.arange(0, secs * fs) / fs
-print(f"{secs} s @ {fs:.0f} Hz = {t_bench.shape[0]} samples")
-
-tab_b = timed("psi_table", lambda: psi_table(p, pts, w, disp_max, po_max))
-eps_b = timed("epsilon",   lambda: epsilon(t_bench, p, tab_b))
-sig_b = timed("RLC",       lambda: RLC(eps_b, p, fs))
-
-full = lambda: RLC(epsilon(t_bench, p, psi_table(p, pts, w, disp_max, po_max)),
-                   p, fs)
-jax.block_until_ready(full())                      # warm the cache first
-t0 = time.perf_counter()
-for _ in range(3): jax.block_until_ready(full())
-dt = (time.perf_counter() - t0) / 3
-print(f"  {'END-TO-END':12s}              warm {dt:7.4f}s   -> {secs/dt:6.1f}x realtime")
+x = np.asarray(eps, dtype=np.float64) * gain
+Audio(x, rate=fs, normalize=False)
 
 # %%
