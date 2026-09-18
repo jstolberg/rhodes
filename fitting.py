@@ -14,7 +14,7 @@
 # | -      | a | half peak width  | Global | 1 |
 # | -      | $p_d$ | pickup distance  | per key | $M$ |
 # | -      | $p_o$ | pickup offset | per key | $M$ |
-# | Hammer | $\tau_0$ | contact time at max velocity | per key | $M$ |
+# | Hammer | $\tau_0$ | contact time at max velocity | log-linear across keys | 2 |
 # | - | $\beta$ | material compression factor | Global | 1 |
 # 
 # Except for the fundamental frequency $f_0$ all of these parameters are free
@@ -70,29 +70,32 @@
 # ($A_0$ depends on velocity, $p_d$ does not).
 # 
 # ## 3. Fitting $\tau_0$ and $\beta$
-# From step 2, we achieve from each key and velocity an amplitude $A_0(v)$, which
-# signify amplitude the idealised free oscilation at $t=0$. As this parameter is 
-# directly handed over by the hammer model, when transitioning to free decay, we 
-# can create forward passes and measure this amplitude against the fitted amplitude
-# of data samples. Sadly, $A_0$ depends both on $c_0$ and $\tau_0$, and thus fitting
-# against data samples could lead to arbitrary results for these parameters.
-# 
-# However, as $c_0$ is a multiplicative factor equal at all velocities, while 
-# contact time is velocity dependent, we can fit $\tau(v)$ and $\beta$ by
-# by evaluating output amplitudes at different velocities, and taking their ratio:
-# Denote by $V_0(v, \beta, \tau_0, c_0)$ the amplitude of the fundamental
-# of the output signal $\epsilon(t)$ at a fixed $t$. Defining
-# $$R(\beta, \tau_0) = \frac{V_0\big|_{v=v_1}}{V_0\big|_{v=v_2}}$$
-# Since the multiplicative factor $c_0$ is unchanced, it cancels out and 
-# the ratio $R$ no longer depends on it. Simple RMS loss can be taken on these
-# ratios between synthsized and data samples, in order to fit $\beta$ and $\tau_0$
-# with backpropagation. 
-# 
+# From step 2, we achieve from each key $k$ and velocity $v$ an amplitude
+# $A_0(k, v)$, which signifies the amplitude of the idealised free oscillation
+# at the moment the hammer leaves the tine. This is exactly the amplitude handed
+# over by the hammer model, which gives it in closed form as
+# $$A_0(k, v) = c_0(k)\, v\, g\big(f_0(k), \tau(v)\big),
+#   \qquad \tau(v) = \tau_0(k)\, v^{-\beta},$$
+# with $g$ the response to a half-sine force pulse of duration $\tau$ (see
+# `hammer2free`). The pickup plays no role, and the fit runs over all keys and
+# velocities at once. Velocities are not measured, so we assume the four
+# dynamic layers p, mp, mf, f correspond to $v = 0.25, 0.5, 0.75, 1$. For
+# identifiability, $\tau_0$ is modelled log-linear across keys.
+#
+# As $c_0$ is a multiplicative factor equal at all velocities, it becomes an
+# additive constant per key in the logarithm,
+# $$\log A_0(k, v) = \log c_0(k) + \log v + \log g\big(f_0(k), \tau(v)\big).$$
+# Let $r(k, v) = \log A_0^\text{data}(k, v) - \log v - \log g$ be the residual
+# and $\bar r(k)$ its mean over the velocities of key $k$. Then
+# $r(k, v) - \bar r(k)$ is independent of $c_0$, and a simple RMS loss on it
+# fits $\beta$ and $\tau_0$ by backpropagation. Cells for which step 2 failed
+# are masked out of the means and the loss.
+#
 # ## 4. Fitting $c_0$
-# With pickup and hammer excitation parameters fixed in step 2 and 3, $c_0$ 
-# remains the only free, unfitted parameter of relevance to the fundamental, 
-# and can be fitted by direct comparison of output amplitudes, e.g. RMS loss 
-# on amplitude of exponential decay fits of the fundamental mode.
+# With pickup and hammer excitation parameters fixed in step 2 and 3, $c_0$
+# remains the only free, unfitted parameter of relevance to the fundamental.
+# It falls out of step 3 directly as $c_0(k) = \exp \bar r(k)$, the per-key
+# mean residual at the fitted $\tau_0$ and $\beta$.
 # 
 # ## 5. Identify inharmonic modes $f_n$
 # TBD
