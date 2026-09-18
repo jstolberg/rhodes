@@ -66,11 +66,15 @@ from scipy import signal
 import numpy as np
 import optax
 from functools import partial
-from IPython.display import Audio
+from IPython.display import Audio, display
 
 jax.config.update("jax_enable_x64", True)
 
-print("jax", jax.__version__, "devices:", jax.devices())
+# Cells below are guarded so `from model import ...` gets the functions only.
+# Jupyter/VS Code cells run with __name__ == "__main__", so they still execute
+# interactively.
+if __name__ == "__main__":
+    print("jax", jax.__version__, "devices:", jax.devices())
 
 
 # %%
@@ -154,9 +158,10 @@ def plot_surface(pts, area, scale=1e3, unit='mm', equal_z=True,
     ax.view_init(elev=elev, azim=azim)
     return ax
 
-pts, w = make_surface(partial(z_trapz, a=0.5e-3, m=0.4), r_max=3e-3)
-plot_surface(pts, w)
-pts, w = drop_masked(pts, w)        # idempotent, so re-running the cell is safe
+if __name__ == "__main__":
+    pts, w = make_surface(partial(z_trapz, a=0.5e-3, m=0.4), r_max=3e-3)
+    plot_surface(pts, w)
+    pts, w = drop_masked(pts, w)    # idempotent, so re-running the cell is safe
 
 # %%
 def calc_tau(vel, p):
@@ -164,13 +169,15 @@ def calc_tau(vel, p):
     tau_0, beta = p['tau_0'], p['beta']
     return tau_0 * jnp.pow(vel, -beta)
 
-def hammer(t, f, c, F_0, tau, eps=1e-9):
+def hammer(t, f, c, vel, tau, eps=1e-9):
     """Tine displacement during contact, 0 <= t <= tau, for mode f.
-    t: (N,) or scalar.  f, c: (M,).  Returns (N, M)."""
+    t: (N,) or scalar.  f, c: (M,).  Returns (N, M).
+    Half-sine pulse of peak F_0 = 2*vel/tau, so its impulse F_0*tau/2 is vel."""
     t = jnp.asarray(t)[..., None]
     f = jnp.atleast_1d(f)
     c = jnp.atleast_1d(c)
 
+    F_0  = 2*vel/tau
     Om   = 2*jnp.pi/tau
     w    = 2*jnp.pi*f
     den  = w**2 - Om**2
@@ -180,8 +187,9 @@ def hammer(t, f, c, F_0, tau, eps=1e-9):
                  - (jnp.cos(Om*t) - jnp.cos(w*t))/safe) * c
     return jnp.where(jnp.abs(den) < eps, 0.0, x)    # (M,) mask over (N,M)
 
-def hammer2free(f, c, F_0, tau, eps=1e-9):
+def hammer2free(f, c, vel, tau, eps=1e-9):
     """Signed amplitude and phase of q(t) = A*sin(w*(t-tau) + phi) for t > tau."""
+    F_0 = 2*vel/tau
     Om  = 2*jnp.pi/tau
     w   = 2*jnp.pi*f
     den = w**2 - Om**2
@@ -199,10 +207,9 @@ def alpha(t, p, vel=1.0):
     """
     c, lam, f = p['c'], p['lam'], p['f_modes']
     tau = calc_tau(vel, p)
-    F_0 = 2*vel/tau                 # impulse F_0*tau/2 = vel
 
-    q_c = hammer(t, f, c, F_0, tau) # Contact displacement
-    A, phi = hammer2free(f, c, F_0, tau) # Parameter handover
+    q_c = hammer(t, f, c, vel, tau) # Contact displacement
+    A, phi = hammer2free(f, c, vel, tau) # Parameter handover
     q_f = A * jnp.exp(-lam * (t - tau)) * jnp.sin(2*jnp.pi * f * (t - tau) + phi) #Free displacement
 
     disp = jnp.sum(jnp.where(t < tau, q_c, q_f))
@@ -221,10 +228,9 @@ def disp_bound(p, vel=1.0, n=4001):
     """
     f, c = p['f_modes'], p['c']
     tau = calc_tau(vel, p)
-    F_0 = 2*vel/tau
-    A, _ = hammer2free(f, c, F_0, tau)
+    A, _ = hammer2free(f, c, vel, tau)
     tt = jnp.linspace(0.0, tau, n)
-    contact = jnp.abs(hammer(tt, f, c, F_0, tau).sum(1)).max()
+    contact = jnp.abs(hammer(tt, f, c, vel, tau).sum(1)).max()
     return float(jnp.maximum(jnp.sum(jnp.abs(A)), contact))
 
 
@@ -257,6 +263,12 @@ def psi_table(p, pts, w, disp_max, po_max, pd_range=None,
     accuracy.  x runs from -pad*disp_max up past pad*disp_max + po_max (plus 2
     cells for the Catmull-Rom stencil), which p_o >= 0 makes one-sided.
 
+    po_max = None pins p_o at p['p_o'] as well: the grid is then exactly n
+    points centred on p_o, spanning +-pad*disp_max, so no offset columns are
+    paid for at all.  Same dx, same accuracy; p_o then may NOT be changed
+    without a rebuild.  Together with n_pd = 1 this is the plain 1-D
+    displacement table -- lookups see the same (x0, dx, z0, dz, V) layout.
+
     n_pd = 1 (default) pins z at p['p_d'] (pd_range is ignored) and costs
     exactly what a 1-D table costs -- psi_lookup drops the z axis at trace
     time.  p_d then may NOT be changed without a rebuild.  For a
@@ -281,8 +293,13 @@ def psi_table(p, pts, w, disp_max, po_max, pd_range=None,
     """
     half = pad * disp_max                             # static
     dx   = 2.0 * half / (n - 1)                       # static
-    n_x  = n + int(np.ceil(po_max / dx)) + 2          # + stencil margin
-    xs   = -half + dx * jnp.arange(n_x)
+    if po_max is None:                                # p_o pinned: centre on it
+        n_x = n                                       # pad alone covers the stencil
+        x0  = jax.lax.stop_gradient(jnp.asarray(p['p_o'], float)) - half
+    else:
+        n_x = n + int(np.ceil(po_max / dx)) + 2       # + stencil margin
+        x0  = -half
+    xs = x0 + dx * jnp.arange(n_x)
 
     if n_pd == 1:                                     # pinned; pd_range moot
         z0, z1 = p['p_d'], p['p_d']
@@ -313,7 +330,7 @@ def psi_table(p, pts, w, disp_max, po_max, pd_range=None,
         v = jax.lax.map(jax.vmap(psi_at), xs_pad.reshape(-1, chunk))
         return v.reshape(-1)[:n_x]
 
-    return -half, dx, z0, dz, jax.lax.map(row, zs)
+    return x0, dx, z0, dz, jax.lax.map(row, zs)
 
 
 def _catmull(p0, p1, p2, p3, u):
@@ -369,61 +386,65 @@ def epsilon(t, p, table, vel=1.0):
     return -jax.vmap(dpsi)(t)
 
 # Example
-p = dict(
-    c=jnp.array([0.005, 1.0]) * 3.06, # per-mode gain; ~1 mm total at vel=1
-    lam=jnp.array([0.1, 1.0]),
-    f_modes=jnp.array([60.0, 440.0]),
-    tau_0=1e-3,                       # contact time at vel=1
-    beta=0.2,                         # tau ~ vel^-beta: 1.6 ms at vel=0.1
-    p_d=2.5e-3,
-    p_o=1.2e-3,
-    f_filter=3e3,
-    Q_filter=2.0)
+if __name__ == "__main__":
+    p = dict(
+        c=jnp.array([0.005, 1.0]) * 3.06, # per-mode gain; ~1 mm total at vel=1
+        lam=jnp.array([0.1, 1.0]),
+        f_modes=jnp.array([60.0, 440.0]),
+        tau_0=1e-3,                       # contact time at vel=1
+        beta=0.2,                         # tau ~ vel^-beta: 1.6 ms at vel=0.1
+        p_d=2.5e-3,
+        p_o=1.2e-3,
+        f_filter=3e3,
+        Q_filter=2.0)
 
-fs = 48000.0
-l = 4
-t   = jnp.arange(0, l*fs) / fs
+    fs = 48000.0
+    l = 4
+    t   = jnp.arange(0, l*fs) / fs
 
-# Promises the table is built against: p_o may roam [0, po_max] with no rebuild,
-# disp_max is the reach of the tine over contact and free decay (see disp_bound).
-disp_max = disp_bound(p)
-po_max   = 4e-3
-pd_range = (1.5e-3, 3.5e-3)   # physical voicing range; pass with n_pd>=4 to
-                              # make p_d adjustable too (n_pd=48 -> ~1e-5)
+    # Promises the table is built against: p_o may roam [0, po_max] with no
+    # rebuild, disp_max is the reach of the tine over contact and free decay
+    # (see disp_bound).
+    disp_max = disp_bound(p)
+    po_max   = 4e-3
+    pd_range = (1.5e-3, 3.5e-3)   # physical voicing range; pass with n_pd>=4 to
+                                  # make p_d adjustable too (n_pd=48 -> ~1e-5)
 
-tab = psi_table(p, pts, w, disp_max, po_max)   # n_pd=1: p_d pinned, rebuild to change it
-eps = epsilon(t, p, tab, vel=0.5)
+    tab = psi_table(p, pts, w, disp_max, po_max)   # n_pd=1: p_d pinned, rebuild to change it
+    # tab = psi_table(p, pts, w, disp_max, None)   # p_o pinned too: 1-D, n points, no offset columns
+    eps = epsilon(t, p, tab, vel=0.5)
 
 # %%
 # Plot results
+if __name__ == "__main__":
+    eps_np = np.asarray(eps, dtype=np.float64)
 
-eps_np = np.asarray(eps, dtype=np.float64)
+    f, t_spec, Sxx = signal.spectrogram(
+        eps_np, fs=fs,
+        nperseg=2048, noverlap=1536,     # 75% overlap
+        window='hann', scaling='spectrum'
+    )
 
-f, t_spec, Sxx = signal.spectrogram(
-    eps_np, fs=fs,
-    nperseg=2048, noverlap=1536,     # 75% overlap
-    window='hann', scaling='spectrum'
-)
+    Sdb = 10*np.log10(Sxx + 1e-20)       # power -> dB, epsilon guards log(0)
 
-Sdb = 10*np.log10(Sxx + 1e-20)       # power -> dB, epsilon guards log(0)
-
-plt.figure(figsize=(10, 5))
-plt.pcolormesh(t_spec, f, Sdb,
-               vmin=Sdb.max()-80, vmax=Sdb.max(),   # 80 dB range
-               shading='gouraud', cmap='magma')
-plt.ylim(0, 8000)                    # partials live low; drop the empty top
-plt.xlabel('time (s)'); plt.ylabel('frequency (Hz)')
-plt.colorbar(label='dB')
-plt.tight_layout(); plt.show()
+    plt.figure(figsize=(10, 5))
+    plt.pcolormesh(t_spec, f, Sdb,
+                   vmin=Sdb.max()-80, vmax=Sdb.max(),   # 80 dB range
+                   shading='gouraud', cmap='magma')
+    plt.ylim(0, 8000)                    # partials live low; drop the empty top
+    plt.xlabel('time (s)'); plt.ylabel('frequency (Hz)')
+    plt.colorbar(label='dB')
+    plt.tight_layout(); plt.show()
 
 # %%
 # Fixed gain, referenced to the loudest velocity, so different vel are audible
 # as different loudness rather than being normalised away.  epsilon is in
 # arbitrary units (kappa absorbed) and peaks at ~4e3 for vel=1 with these p.
 # Audio() normalises by default and would undo this -- hence normalize=False.
-gain = 0.8 / float(jnp.abs(epsilon(t, p, tab, vel=1.0)).max())
+if __name__ == "__main__":
+    gain = 0.8 / float(jnp.abs(epsilon(t, p, tab, vel=1.0)).max())
 
-x = np.asarray(eps, dtype=np.float64) * gain
-Audio(x, rate=fs, normalize=False)
+    x = np.asarray(eps, dtype=np.float64) * gain
+    display(Audio(x, rate=fs, normalize=False))   # not a bare last expression any more
 
 # %%
