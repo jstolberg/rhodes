@@ -12,10 +12,15 @@
 # |  -     | $c_n$ | modal excitation coefficients | per mode | $N \times M$ |
 # | Pickup | m | slope steepness | Global | 1 |
 # | -      | a | half peak width  | Global | 1 |
+# | -      | r | pickup radius | Global | 1 | 
 # | -      | $p_d$ | pickup distance  | per key | $M$ |
 # | -      | $p_o$ | pickup offset | per key | $M$ |
 # | Hammer | $\tau_0$ | contact time at max velocity | log-linear across keys | 2 |
 # | - | $\beta$ | material compression factor | Global | 1 |
+#
+# Alternatively to fitting pickup parameters, these can also be fixed based on
+# approximations based on photos. Initial estimation indicate $r \approx 4mm$, 
+# $a \approx 1.3mm$ and $m \approx 1$. 
 # 
 # Except for the fundamental frequency $f_0$ all of these parameters are free
 # and have to be fittet. As several parameters contribute to the same measured 

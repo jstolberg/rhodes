@@ -302,14 +302,15 @@ def psi_table(p, pts, w, disp_max, po_max, pd_range=None,
     xs = x0 + dx * jnp.arange(n_x)
 
     if n_pd == 1:                                     # pinned; pd_range moot
-        z0, z1 = p['p_d'], p['p_d']
+        # The single row *is* Psi(x, p_d): keep its gradient so p_d can be
+        # fitted through a table rebuilt every step (unlike grid placement).
+        z0 = jnp.asarray(p['p_d'], xs.dtype)
+        dz = jnp.asarray(1.0, xs.dtype)
     elif pd_range is None:
         raise ValueError("n_pd > 1 needs an explicit pd_range")
     else:
-        z0, z1 = pd_range
-    z0 = jax.lax.stop_gradient(jnp.asarray(z0, xs.dtype))
-    dz = (jax.lax.stop_gradient(jnp.asarray(z1, xs.dtype)) - z0) / (n_pd - 1) \
-         if n_pd > 1 else jnp.asarray(1.0, xs.dtype)
+        z0 = jax.lax.stop_gradient(jnp.asarray(pd_range[0], xs.dtype))
+        dz = (jax.lax.stop_gradient(jnp.asarray(pd_range[1], xs.dtype)) - z0) / (n_pd - 1)
     zs = z0 + dz * jnp.arange(n_pd)
 
     xj, yj2, zj = pts[:, 0], pts[:, 1]**2, pts[:, 2]
