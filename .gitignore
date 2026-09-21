@@ -4,3 +4,8 @@ venv/
 
 # Data
 Samples/
+render/
+cache/
+
+# Python
+__pycache__/
