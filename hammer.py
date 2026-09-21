@@ -22,6 +22,8 @@
 # %%
 from __future__ import annotations
 
+import os
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -59,38 +61,41 @@ def tau0_of_key(theta):
     return jnp.exp(lo + (hi - lo) * keys)
 
 
-def log_amp(theta):
-    """(M, 4) log|A_0| for c_0 = 1: the velocity-dependent part of the model."""
+def log_amp(theta, sig=None, t_meas=0.0):
+    """(M, 4) log|A_0| for c_0 = 1: the velocity-dependent part of the model.  With sig (M,)
+    the handover amplitude is carried to the measurement time t_meas after onset,
+    A(t_meas) = A_h e^{-sig (t_meas - tau(v))}."""
     beta = jnp.exp(theta['log_beta'])
     tau0 = tau0_of_key(theta)
+    sig  = jnp.zeros(M) if sig is None else sig
 
-    def one(f, t0, v):
+    def one(f, t0, s, v):
         tau = calc_tau(v, dict(tau_0=t0, beta=beta))
-        return jnp.log(jnp.abs(hammer2free(f, 1.0, v, tau)[0]))
+        return jnp.log(jnp.abs(hammer2free(f, 1.0, v, tau)[0])) - s * (t_meas - tau)
 
-    return jax.vmap(jax.vmap(one, (None, None, 0)), (0, 0, None))(f0, tau0, VELS)
+    return jax.vmap(jax.vmap(one, (None, None, None, 0)), (0, 0, 0, None))(f0, tau0, sig, VELS)
 
 
-def log_c0(theta, logA0, ok):
+def log_c0(theta, logA0, ok, sig=None, t_meas=0.0):
     """(M,) per-key mean residual = log c_0 estimate (masked)."""
-    r = jnp.where(ok, logA0 - log_amp(theta), 0.0)
+    r = jnp.where(ok, logA0 - log_amp(theta, sig, t_meas), 0.0)
     return r.sum(1) / ok.sum(1)
 
 
-def loss(theta, logA0, ok):
+def loss(theta, logA0, ok, sig=None, t_meas=0.0):
     """MSE of the residual with the per-key mean removed -- c_0 cancelled."""
-    r  = logA0 - log_amp(theta)
-    d  = jnp.where(ok, r - log_c0(theta, logA0, ok)[:, None], 0.0)
+    r  = logA0 - log_amp(theta, sig, t_meas)
+    d  = jnp.where(ok, r - log_c0(theta, logA0, ok, sig, t_meas)[:, None], 0.0)
     return jnp.sum(d**2) / ok.sum()
 
 
-def fit(theta, logA0, ok, steps=3000, lr=0.02):
+def fit(theta, logA0, ok, sig=None, t_meas=0.0, steps=3000, lr=0.02):
     opt   = optax.adam(lr)
     state = opt.init(theta)
 
     @jax.jit
     def step(theta, state):
-        l, g = jax.value_and_grad(loss)(theta, logA0, ok)
+        l, g = jax.value_and_grad(loss)(theta, logA0, ok, sig, t_meas)
         upd, state = opt.update(g, state, theta)
         return optax.apply_updates(theta, upd), state, l
 
@@ -159,8 +164,47 @@ plt.tight_layout(); plt.show()
 
 # %%
 # ---------- real data ----------
-# Once step 2 exists: logA0 = jnp.log(A0_measured) with shape (M, 4) in the
-# order p, mp, mf, f and ok its validity mask, then
-#   theta_fit, hist = fit(theta0, logA0, ok);  c0 = jnp.exp(log_c0(theta_fit, logA0, ok))
-# Sanity check on the assumed velocities: for bass keys A_0 is blind to tau, so
-# exp(logA0[:12, 0] - logA0[:12, 3]) should sit near VELS[0] = 0.25.
+# Step 2 (step2_fit.npz): A_0 (M, 4) in the order p, mp, mf, f, measured at t_0 = onset +
+# T_START, with sigma_0 per key.  The model carries the handover amplitude to t_0 with that
+# decay, A_0 = A_h e^{-sigma_0 (t_0 - tau(v))}, so c_0 is the true excitation coefficient.
+T_START = 10e-3
+fit2  = np.load("step2_fit.npz", allow_pickle=True)
+assert (fit2["notes"] == notes).all()
+logA0_r = jnp.log(jnp.asarray(fit2["A0"]))
+ok_r    = jnp.asarray(fit2["ok"])
+sig_r   = jnp.asarray(fit2["sigma"])
+f0      = jnp.asarray(fit2["f0"])                          # the f_0 step 2 used
+
+theta_r, hist_r = fit(theta0, logA0_r, ok_r, sig_r, T_START)
+c0_r = jnp.exp(log_c0(theta_r, logA0_r, ok_r, sig_r, T_START))
+print(f"real: loss {hist_r[0]:.3e} -> {hist_r[-1]:.3e}")
+print("fit: ", report(theta_r))
+r = jnp.where(ok_r, logA0_r - log_amp(theta_r, sig_r, T_START)
+              - log_c0(theta_r, logA0_r, ok_r, sig_r, T_START)[:, None], 0.0)
+print("rms residual per dynamic (log):", np.round(np.sqrt(np.asarray((r**2).sum(0) / ok_r.sum(0))), 3))
+print("bass check, mean A_0 ratios p/mp/mf : f over the lowest 12 keys (assumed .25 .5 .75):",
+      np.round(np.asarray(jnp.exp(logA0_r[:12, :3] - logA0_r[:12, 3:]).mean(0)), 3))
+
+np.savez("step3_fit.npz", notes=notes, f0=np.asarray(f0), tau0=np.asarray(tau0_of_key(theta_r)),
+         beta=float(jnp.exp(theta_r["log_beta"])), c0=np.asarray(c0_r),
+         log_tau0=np.asarray(theta_r["log_tau0"]))
+
+# %%
+fig, ax = plt.subplots(1, 3, figsize=(15, 4))
+ax[0].semilogy(hist_r); ax[0].set_xlabel("step"); ax[0].set_ylabel("loss")
+ax[1].semilogy(tau0_of_key(theta_r) * 1e3, label="fit")
+ax[1].semilogy(tau0_of_key(theta0) * 1e3, ":", label="init")
+ax[1].set_ylabel("tau_0 (ms)"); ax[1].legend()
+ax[2].semilogy(c0_r); ax[2].set_ylabel("c_0")
+for a in ax[1:]:
+    a.set_xticks(range(0, M, 6)); a.set_xticklabels(notes[::6], rotation=60)
+plt.suptitle(f"step 3 on real data: {report(theta_r)}"); plt.tight_layout()
+os.makedirs("plots", exist_ok=True)
+plt.savefig("plots/step3_params.png", dpi=90); plt.show()
+
+plt.figure(figsize=(15, 4))
+for j, d in enumerate(["p", "mp", "mf", "f"]):
+    plt.plot(np.asarray(r[:, j]), ".-", label=d)
+plt.axhline(0, color="k", lw=0.5); plt.ylabel("log residual (c_0 removed)"); plt.legend()
+plt.xticks(range(0, M, 6), notes[::6], rotation=60); plt.tight_layout()
+plt.savefig("plots/step3_residuals.png", dpi=90); plt.show()
