@@ -1,57 +1,51 @@
 # %% [markdown]
 # # Tine modes from the pickup recordings
 #
-# Read the frequency and decay of the tine's inharmonic modes (Gabrielli et al.
-# 2020: ratios 7.1, 20.4, 39.7, 62.9, 93.1 to $f_0$) off the recorded pickup
-# signal, without any model of the pickup.
+# This script finds the frequency and decay of the tine's inharmonic modes in the
+# recorded pickup signal. Gabrielli et al. (2020) measured them at about 7.1, 20.4,
+# 39.7, 62.9 and 93.1 times $f_0$. No pickup model is needed.
 #
-# ## What a mode looks like at the pickup output
+# ## Idea
 #
-# The tine tip moves as $x(t) = p_o + A_1\sin\theta(t) + a_m\cos(\omega_m t)$
-# with $\theta = \omega_1 t$ and $a_m \ll A_1$. The output is
-# $\epsilon = -\mathrm{d}\Psi(x)/\mathrm{d}t$. To first order in $a_m$,
+# The tine tip moves as $x = p_o + A_1\sin\theta + a_m\cos\omega_m t$, with
+# $\theta = \omega_1 t$ and a small mode amplitude $a_m$. The pickup turns this into
 #
 # $$\Psi(x) \approx \Psi(p_o + A_1\sin\theta) + a_m\cos(\omega_m t)\,\Psi'(p_o + A_1\sin\theta).$$
 #
-# The first term is the harmonic series. The second is the mode multiplied by
-# $g(\theta) = \Psi'(p_o + A_1\sin\theta)$, a real periodic function of $\theta$:
-# $g = \sum_k c_k e^{ik\theta}$ with $c_{-k} = \overline{c_k}$. So every mode
-# shows up as a **comb**, with lines at $f_m + k f_0$ and flux amplitudes
-# $\tfrac{a_m}{2}|c_k|$. It follows that:
+# The first term is the harmonic series. In the second, the mode is multiplied by a
+# function that repeats with every period of the fundamental. So a mode does not show
+# up as one line. It shows up as a comb of lines at $f_m + k f_0$.
 #
-# * every line of one comb sits the same fraction $\delta = \mathrm{frac}(f_m/f_0)$
-#   off the harmonic grid, which is how lines are grouped into combs;
-# * the comb is **symmetric in magnitude about the true mode** ($|c_k| = |c_{-k}|$)
-#   once the output's $\mathrm{d}/\mathrm{d}t$ is divided out. This holds for any
-#   pickup shape, and for either polarisation of the mode;
-# * at low dynamics $g$ is nearly constant, so $|c_0|$ dominates and the true
-#   mode is the tallest line of its comb.
+# Three facts about the comb make it usable:
 #
-# From the output alone, $f_m$ is known exactly only modulo $f_0$. The integer
-# part comes from carrier dominance and symmetry at low dynamics, checked
-# against Gabrielli's keyboard statistics ($\sigma \le 0.4$ for modes 2 and 3).
+# * All lines of a comb sit the same distance off the harmonic grid. This is how
+#   lines are grouped into combs.
+# * Once the output's $\mathrm{d}/\mathrm{d}t$ is divided out, the comb is
+#   symmetric about the true mode, whatever the pickup's shape.
+# * At soft dynamics the true mode is the loudest line of its comb.
 #
-# ## Procedure (per recording)
+# A comb gives $f_m$ only up to a multiple of $f_0$. Symmetry and Gabrielli's
+# ratios decide which line is the mode.
 #
-# 1. **Attack window.** Gabrielli used the first 300 ms at very low dynamic,
-#    and so do we. The window starts just after the hammer and runs
-#    $T = \mathrm{clip}(60/f_0,\,0.3,\,1.5)$ s: longer in the bass, where lines
-#    crowd and modes decay slowly.
-# 2. **$f_0$ in that window**, from the harmonic series. $f_0$ depends on the
-#    dynamic and glides, so the value from the whole note is not good enough.
-# 3. **Baseband** around the mode's prior window: mix, low-pass, decimate.
-# 4. **Nuisance.** Every harmonic $k f_0$ in the band, with a slowly varying
-#    envelope (Legendre polynomial of order `P_HARM`), and every 60 Hz hum line
-#    (hum frequency measured per recording from the tail). Both are projected out.
-# 5. **Comb pursuit.** Scan the residual with decaying atoms
-#    $e^{(i 2\pi f - \lambda)t}$ (a matched filter for decaying lines). Take the
-#    strongest line, add its whole comb $(k+\delta) f_0$ to the nuisance, and
-#    repeat until nothing stands `MIN_SNR_DB` over the floor.
-# 6. **Assign.** The mode is the comb whose tallest line (after dividing by
-#    frequency) falls inside the prior window $\mu \pm 3\sigma$. Symmetry and the
-#    margin to the runner-up are reported as a confidence.
-# 7. **Refine** frequency and decay of that line by non-linear least squares,
-#    with everything else held as nuisance.
+# ## Steps, per recording
+#
+# 1. Take a window that starts 5 ms after the onset and runs
+#    $T = \mathrm{clip}(60/f_0,\,0.3,\,1.5)$ s. Bass notes get the longer windows.
+# 2. Measure $f_0$ in that window, and the mains frequency in the tail.
+# 3. For each mode, cut out the band around its expected ratio, $\mu \pm 3\sigma$
+#    plus a few $f_0$ on each side for the comb lines.
+# 4. Remove the harmonics and the hum from the band.
+# 5. Find the combs. Take the strongest line left, remove its whole comb, and
+#    repeat until nothing stands `MIN_SNR_DB` above the noise.
+# 6. Pick the mode. In each comb, the candidate is the line inside $\mu \pm 3\sigma$
+#    that the comb is most symmetric about. Lopsided combs and combs on top of a
+#    harmonic are dropped. The loudest remaining comb is the mode.
+# 7. Measure the frequency and decay of that line with a grid search over decaying
+#    test tones.
+#
+# Over the keyboard, a mode counts as confirmed when at least two dynamics of a key
+# agree on its frequency. The last cell plots the result in the layout of
+# Gabrielli's Fig. 20.
 
 # %%
 from __future__ import annotations
@@ -60,9 +54,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import scipy.io.wavfile as wavfile
-import scipy.optimize as so
 import scipy.signal as sg
-from scipy.ndimage import median_filter
 
 SAMPLES = "Samples"
 
@@ -74,17 +66,15 @@ MODES = {                 # name: (mu, sigma)
     "m5": (62.9, 1.9),
     "m6": (93.1, 2.7),
 }
-SUB = (0.48, 0.19)        # tonebar sub-fundamental, same figure
 
 F_MAX = 12000.0           # Gabrielli: no overtones above ~10 kHz
 HUM_F = 60.0
 P_HARM = (3, 5)           # envelope order for harmonics: windows up to 0.6 s, longer
 P_HUM = 1
 P_COMB = 2                # envelope order for combs already found
-MIN_SNR_DB = 12.0         # a line must stand this far over the local floor
+MIN_SNR_DB = 12.0         # a line must stand this far over the floor
 MAX_COMBS = 14            # pursuit iterations per band
 DUP_CELLS = 2.5           # combs closer than this many 1/T cells are one comb
-LAMS = np.array([0.0, 2.0, 5.0, 10.0, 20.0, 40.0, 80.0])   # 1/s, decay grid for the scan
 LAM_MAX = 150.0           # 1/s = 1300 dB/s: gone in 7 ms, the hammer, not a mode
                           # (Gabrielli's fastest mode: 294 dB/s)
 
@@ -132,19 +122,23 @@ def _dtft(seg, fs, freqs):
 def refine_f0(seg, fs, f0_guess, kmax=12, span=0.008, n_grid=161, iters=3):
     """f0 maximising the summed energy of harmonics 1..kmax in seg (Hann-windowed)."""
     w = sg.windows.hann(seg.size) * seg
+    # check up to 12 harmonics at the same 
     ks = np.arange(1, kmax + 1)
     ks = ks[ks * f0_guess < min(F_MAX, 0.45 * fs)]
     lo, hi = f0_guess * (1 - span), f0_guess * (1 + span)
+    # refine 3 times 
     for _ in range(iters):
         grid = np.linspace(lo, hi, n_grid)
         E = np.zeros(n_grid)
+        # calculate energy for all k*f0 harmonics
         for k in ks:
             E += np.abs(_dtft(w, fs, k * grid)) ** 2
-        j = int(np.clip(np.argmax(E), 1, n_grid - 2))
+        # get index of highest scoring candidate 
+        j = int(np.argmax(E))
+        # finer step size for next iteration
         step = grid[1] - grid[0]
         lo, hi = grid[j] - 2 * step, grid[j] + 2 * step
-    a, b, c = np.log(E[j - 1:j + 2])
-    return float(grid[j] + 0.5 * (a - c) / (a - 2 * b + c) * step)
+    return float(grid[j])
 
 
 def hum_freq(x, fs, f0, t0=4.0, t1=7.2):
@@ -154,18 +148,24 @@ def hum_freq(x, fs, f0, t0=4.0, t1=7.2):
     seg = x[int(t0 * fs):int(t1 * fs)]
     w = sg.windows.blackmanharris(seg.size) * seg
     est, wts = [], []
+    # hum harmonic-ratios
     for h in (1, 3, 5, 7, 9):
         fh = HUM_F * h
+        # skip if line to close to fundamental
         if abs(fh / f0 - round(fh / f0)) * f0 < 3.0 or fh > 0.45 * fs:
             continue
         grid = np.linspace(fh - 0.1 * h, fh + 0.1 * h, 401)
+        # energy for every freq on grid
         E = np.abs(_dtft(w, fs, grid))
-        j = int(np.clip(np.argmax(E), 1, 399))
-        a, b, c = np.log(E[j - 1:j + 2])
-        est.append((grid[j] + 0.5 * (a - c) / (a - 2 * b + c) * (grid[1] - grid[0])) / h)
+        # index of highest score
+        j = int(np.argmax(E))
+        # append base freq
+        est.append(grid[j] / h)
+        # store energy for the candidate 
         wts.append(E[j])
     if not est:
         return HUM_F
+    # weighted average
     return float(np.average(est, weights=wts))
 
 
@@ -211,20 +211,27 @@ HUM_H_MAX = 40            # hum lines above 40 x 60 Hz are below the floor
 
 
 def legendre_cols(t, P):
+    """legendre polynomial with steady ramp U and S shape. The P+1 volume shapes (flat, ramp, U, S, ...) over the window, one per column. 
+    Mixed together they can draw any slow change in volume."""
+    # rescale time axis to be between -1 and +1 (needed for legendre polynomial)
     tau = 2 * (t - t[0]) / (t[-1] - t[0]) - 1
     return np.stack([np.polynomial.legendre.Legendre.basis(p)(tau) for p in range(P + 1)], 1)
 
 
-def line_cols(t, f_rel, P, lam=0.0):
-    """Columns e^{(i2pi f - lam) t} * Legendre_p(t) for each f in f_rel (Hz, relative to fc)."""
+def line_cols(t, f_rel, P):
+    """Columns e^{i2pi f t} * Legendre_p(t) for each f in f_rel (Hz, relative to fc). One line = a tone at frequency f whose volume may change slowly. For each f, build P+1 versions of the tone (steady, ramp, U, S, ...); a fit later finds how much of each to mix."""
     if len(f_rel) == 0:
         return np.zeros((t.size, 0), complex)
-    L = legendre_cols(t, P) * np.exp(-lam * (t - t[0]))[:, None]
+    # create the four shapes
+    L = legendre_cols(t, P)
+    # create tones with constant volume at given frequencies
     E = np.exp(2j * np.pi * np.outer(t, f_rel))
+    # compute tones with shapes
     return (E[:, :, None] * L[:, None, :]).reshape(t.size, -1)
 
 
 def _orth(A):
+    """Rewrite the columns as a non-overlapping set that spans the same signals (exact duplicates dropped), so removing them from the audio is one line: r = y - Q @ (Q^H y)."""
     if A.shape[1] == 0:
         return A
     Q, R = np.linalg.qr(A)
@@ -244,69 +251,80 @@ class Band:
     hi: float
     half_bw: float                    # scanned region |f - fc| <= half_bw
     base: np.ndarray                  # harmonics and hum
-    combs: list = field(default_factory=list)   # dicts: delta, lam, lines {k: (f, amp, snr_db, lam)}
+    # dicts: delta, floor, P, ks (lines that get nuisance columns) and
+    # lines {k: (f, amp, snr_db, resolved)}
+    combs: list = field(default_factory=list)
     floor: float = np.nan
 
 
 def comb_lines(band, delta):
-    """k and frequency of every line (k+delta) f0 of one comb inside the modelled region,
-    plus the mirror images -(k+delta) f0 (these matter only for bands near 0 Hz)."""
-    kmax = int(np.ceil(max(abs(band.lo), abs(band.hi)) / band.f0)) + 2
-    kk = np.arange(0, kmax)
-    f = (kk + delta) * band.f0
-    ks = np.concatenate([kk, -kk - 1000])          # images tagged with k <= -1000
-    f = np.concatenate([f, -f])
+    """k and frequency of every line (k+delta) f0 of one comb inside the modelled region."""
+    # how many ks
+    kmax = int(np.ceil(band.hi / band.f0)) + 2
+    ks = np.arange(0, kmax)
+    # freqs in comb
+    f = (ks + delta) * band.f0
+    # only keep f in band
     m = (f > band.lo) & (f < band.hi)
     return ks[m], f[m]
 
 
-def nuisance(band, skip=None):
+def nuisance(band):
     """Orthonormal basis: harmonics, hum and the visible lines of every comb found so far,
-    each comb with its own decay and envelope order. skip = (comb index, k) leaves one
-    line out. Lines under the floor get no columns: they carry nothing, and every column
-    costs degrees of freedom the scan needs."""
+    each comb with its own envelope order. Lines under the floor get no columns: they
+    carry nothing, and every column costs degrees of freedom the scan needs."""
     cols = [band.base]
-    for i, c in enumerate(band.combs):
-        ks = [k for k in c["ks"] if not (skip is not None and skip[0] == i and k == skip[1])]
-        fs_ = np.array([(k + c["delta"]) * band.f0 for k in ks])
-        cols.append(line_cols(band.t, fs_ - band.fc, c["P"], c["lam"]))
+    for c in band.combs:
+        fs_ = np.array([(k + c["delta"]) * band.f0 for k in c["ks"]])
+        cols.append(line_cols(band.t, fs_ - band.fc, c["P"]))
     return _orth(np.hstack(cols))
 
 
 def _scan(band, r):
-    """Matched-filter score over (lam, f) with one FFT per decay, *without* the nuisance
-    correction of the atom norm: |a^H r|^2 / ||a||^2. Since r is orthogonal to the
-    nuisance this never exceeds the exact score |a^H r|^2 / ||P_perp a||^2; the two differ
-    only next to nuisance lines. Used to find peaks; `exact` scores the chosen cells.
+    """Spectrum of r as a score per frequency, *without* the nuisance correction of the atom
+    norm: |a^H r|^2 / ||a||^2. Since r is orthogonal to the nuisance this never exceeds the
+    exact score |a^H r|^2 / ||P_perp a||^2; the two differ only next to nuisance lines.
+    Used to find peaks; `exact` scores the chosen cells.
     """
     t = band.t - band.t[0]
     nfft = int(2 ** np.ceil(np.log2(8 * t.size)))
     f = np.fft.fftfreq(nfft, 1 / band.fs_d)
     sel = np.abs(f) <= band.half_bw
+    # sort freqs
     order = np.argsort(f[sel])
     f_rel = f[sel][order]
-    S = np.zeros((LAMS.size, f_rel.size))
-    for i, lam in enumerate(LAMS):
-        e = np.exp(-lam * t)
-        S[i] = np.abs(np.fft.fft(r * e, nfft)[sel][order]) ** 2 / np.sum(e ** 2)
+    # calculate energy for each freq and normalizes
+    S = np.abs(np.fft.fft(r, nfft)[sel][order]) ** 2 / t.size
     return f_rel, S
 
 
 def exact(band, Q, r, f_abs):
-    """Exact score, amplitude and resolved fraction ||P_perp a||^2/||a||^2 of the atom at
-    f_abs (Hz) for every decay in LAMS. For white noise of power sigma^2 the score has
-    mean sigma^2."""
+    """Is there a line at f_abs (Hz), how loud is it, and can the answer be trusted?
+
+    Holds a test tone at f_abs against the residual r. Near a harmonic the nuisance
+    subtraction has already taken part of anything there, so the match is scaled up by
+    how much of the test tone survives that subtraction (den).
+    Returns (score, amplitude, trust): score is in noise-floor units (white noise of
+    power sigma^2 scores sigma^2 on average); trust = den / na is the surviving fraction,
+    1 = far from any harmonic, near 0 = hidden under one."""
     t = band.t - band.t[0]
-    A = np.exp((2j * np.pi * (f_abs - band.fc) - LAMS[None, :]) * t[:, None])   # (n_t, n_lam)
-    na = np.sum(np.abs(A) ** 2, 0)
-    den = na - np.sum(np.abs(Q.conj().T @ A) ** 2, 0) if Q.shape[1] else na
-    den = np.maximum(den, 1e-9 * na)
-    num = A.conj().T @ r
-    return np.abs(num) ** 2 / den, num / den, den / na
+    a = np.exp(2j * np.pi * (f_abs - band.fc) * t)
+    na = float(t.size)
+    den = na - np.sum(np.abs(Q.conj().T @ a) ** 2) if Q.shape[1] else na
+    den = max(den, 1e-9 * na)
+    num = np.vdot(a, r)
+    return abs(num) ** 2 / den, num / den, den / na
 
 
 def make_band(x, fs, f0, fc, half_bw, i_on, T, f_hum, track=None):
-    """Baseband around fc plus the harmonic and hum nuisance.
+    """Zoom in on the frequency slice fc +- half_bw and prepare what is known in it.
+
+    1. Cut the slice out: shift fc down to 0 Hz, low-pass away everything else, and keep
+       only every d-th sample. After the filter the fastest wiggle left is at the edge of
+       the slice, so far fewer samples describe it just as well (D3: 14400 -> 1600),
+       and everything downstream is that much faster.
+    2. Build the columns of the harmonics and hum in the slice (the nuisance base), each
+       with a slowly changing volume, harmonics phase-locked to the fundamental.
 
     The window starts after the onset by the larger of 5 ms and the FIR half-length, so
     the filtered hammer impact does not leak into it. The FIR runs over the file from its
@@ -314,22 +332,34 @@ def make_band(x, fs, f0, fc, half_bw, i_on, T, f_hum, track=None):
     """
     guard = max(1.5 * f0, 30.0)
     n = int(T * fs)
+    # prepare filter for carving out the slice 
     ntaps, beta = sg.kaiserord(100.0, guard / (fs / 2))
     ntaps |= 1
+    # start after the initial hammer transient
     i0 = i_on + max(int(0.005 * fs), ntaps // 2)
     taps = sg.firwin(ntaps, half_bw + 1.5 * guard, fs=fs, window=("kaiser", beta))
+    # shift target freq down to 0 Hz  
     stop = min(x.size, i0 + n + ntaps)
     xm = x[:stop] * np.exp(-2j * np.pi * fc * np.arange(stop) / fs)
+    # apply the filter 
     yf = sg.fftconvolve(xm, taps, mode="same")
+    # keep only every d-th sample to speed up process 
     d = max(1, int(np.floor(fs / (2.5 * (half_bw + 2 * guard)))))
     y = yf[i0:i0 + n:d]
     fs_d = fs / d
+    # time of each kept sample
     t = (i0 - i_on) / fs + np.arange(y.size) / fs_d
+    # PREPARE POTENTIAL SUBTRACTIONS 
+    # range where known things like harmonics get subtracted
     lo, hi = fc - half_bw - 2 * guard, fc + half_bw + 2 * guard
-    ks = np.arange(int(np.ceil(lo / f0)), int(np.floor(hi / f0)) + 1)       # k = 0: DC drift
+    # which harmonics are in that range
+    ks = np.arange(int(np.ceil(lo / f0)), int(np.floor(hi / f0)) + 1)  
+    # which hum lines are in the range
     hs = np.arange(int(np.ceil(lo / f_hum)), int(np.floor(hi / f_hum)) + 1)
     hs = hs[(hs != 0) & (np.abs(hs) <= HUM_H_MAX)]
+    # create the "tone version" which volumes may change
     H = line_cols(t, ks * f0 - fc, p_harm(T))
+    # each harmonic k follows the fundamentals pitch drift
     if track is not None:                       # phase-lock harmonic k to k * psi
         lock = np.exp(1j * np.outer(track.psi(t), ks))                # (n_t, n_k)
         H = (H.reshape(t.size, ks.size, -1) * lock[:, :, None]).reshape(t.size, -1)
@@ -345,13 +375,13 @@ TRIM_BIAS = 1 - (1 - TRIM) * (1 - np.log(1 - TRIM)) / TRIM   # ... over that mea
 
 
 def noise_floor(band, r):
-    """Noise power in the units of the scan score (for white noise the score's mean).
+    """How loud the noise is in the band, as one number (same units as the exact score).
 
-    A trimmed mean of the Hann periodogram of the residual over the scanned band. Hann
-    keeps sidelobes of the remaining lines local, the trim drops the lines themselves and
-    leftover humps at harmonics, and TRIM_BIAS undoes the trim for exponential noise bins.
-    One number for the band: a local floor lets the scan's own (rectangular) sidelobes
-    pass as lines.
+    The spectrum of the residual is a noise carpet with a few tall line spikes. Sort it,
+    drop the top 20 % (the spikes), average the rest, and scale up by 1/TRIM_BIAS,
+    because dropping the top also removed the naturally high parts of the noise.
+    The Hann window keeps each line's energy near the line. One number for the whole
+    band: a local floor would be pushed up by the scan's side-bumps next to lines.
     """
     t = band.t - band.t[0]
     w = sg.windows.hann(t.size)
@@ -363,12 +393,17 @@ def noise_floor(band, r):
 
 
 def _comb_energy(band, f_rel, S, delta):
-    """Summed matched energy of a comb's lines, per decay (nearest grid cell)."""
+    """Summed spectral energy of a comb's lines (nearest grid cell)."""
+    # frequency spacing 
     df = f_rel[1] - f_rel[0]
+    # get all lines in comb 
     _, fs_ = comb_lines(band, delta)
+    # keep only lines in search region
     fs_ = fs_[np.abs(fs_ - band.fc) <= band.half_bw]
+    # for each line find nearest point in spectrum 
     j = np.clip(np.round((fs_ - band.fc - f_rel[0]) / df).astype(int), 0, f_rel.size - 1)
-    return S[:, j].sum(1)
+    # sum energy
+    return S[j].sum()
 
 
 def pursue(band):
@@ -378,85 +413,86 @@ def pursue(band):
     after its envelope has been loosened is left as it is and its lines are masked out
     of the scan (CLEAN-style), so one imperfect removal cannot stall the search.
     """
-    masked = []                                  # (f_lo, f_hi) absolute Hz
+    # list of regions to ignore
+    masked = []                 # (f_lo, f_hi) absolute Hz                      
     for _ in range(MAX_COMBS):
+        # subtract everything known (hum, harmonics ...)
         Q = nuisance(band)
         r = band.y - Q @ (Q.conj().T @ band.y)
+        # take spectrum of what is left and blanks out ignored regions
         f_rel, S = _scan(band, r)
-        s = S.max(0)
+        s = S.copy()
         f_abs = band.fc + f_rel
         for a, b in masked:
             s[(f_abs > a) & (f_abs < b)] = 0.0
+        # measure noise level
         band.floor = floor = noise_floor(band, r)
-        lf_f, lf = local_floor(band, r)
-        loc = np.interp(f_rel, lf_f, lf)
+        # get highest remaining peak
         j = int(np.argmax(s))
         Sj, _, _ = exact(band, Q, r, f_abs[j])
-        if 10 * np.log10(max(Sj.max(), 1e-300) / floor) < MIN_SNR_DB:
+        # check if remaining highest peak is loud above the noise
+        if 10 * np.log10(max(Sj, 1e-300) / floor) < MIN_SNR_DB:
             break
-        if 10 * np.log10(max(Sj.max(), 1e-300) / loc[j]) < MIN_SNR_DB:
-            # loud, but no louder than its own neighbourhood: the leakage skirt of a
-            # harmonic. Modelling it as a comb would plant columns all over the band.
-            masked.append((f_abs[j] - 1.0 / band.T, f_abs[j] + 1.0 / band.T))
-            continue
-        # delta and decay from the whole comb: maximise its summed energy
+        # delta from the whole comb: maximise its summed energy
         df = f_rel[1] - f_rel[0]
         d0 = (f_abs[j] / band.f0) % 1.0
         cand = d0 + np.arange(-3, 4) * df / band.f0
-        E = np.array([_comb_energy(band, f_rel, S, d) for d in cand])       # (cand, lam)
-        ic, il = np.unravel_index(int(np.argmax(E)), E.shape)
-        delta = float(cand[ic] % 1.0)
+        E = np.array([_comb_energy(band, f_rel, S, d) for d in cand])
+        # keep estimation with highest energy
+        delta = float(cand[int(np.argmax(E))] % 1.0)
         # Within ~2.5/T Hz of a comb already found, a "new" comb is that comb's leftover
         # skirt (its sideband envelopes are not a clean exponential where the pickup is
         # strongly non-linear), and it would replicate on every k. Loosen the old one.
         tol = max(DUP_CELLS / (band.T * band.f0), 0.002)
         dup = [c for c in band.combs if _dist(c["delta"], delta) < tol]
-        comb = {"delta": delta, "lam": float(LAMS[il]), "floor": floor, "lines": {},
-                "P": P_COMB, "ks": []}
+        # new comb record, then check every tooth like a checklist
+        comb = {"delta": delta, "floor": floor, "lines": {}, "P": P_COMB, "ks": []}
         w = max(1, int(round(0.25 / (band.T * df))))          # +- 1/(4T) Hz
+        # where the teeth should be
         ks, fs_ = comb_lines(band, delta)
-        # lines already owned by earlier (stronger) combs: a later comb gets no columns
-        # within the resolution of them, or weak junk combs end up absorbing a real line
-        owned = np.array([(k2 + c2["delta"]) * band.f0 for c2 in band.combs for k2 in c2["ks"]])
         for k, fk in zip(ks, fs_):
+            # skip teeth outside the search region
             if abs(fk - band.fc) > band.half_bw:
                 continue
+            # go to the expected position and take the highest point nearby
             jj = int(round((fk - band.fc - f_rel[0]) / df))
             a, b = max(0, jj - w), min(s.size, jj + w + 1)
             if b <= a:
                 continue
             m = a + int(np.argmax(s[a:b]))
+            # measure the tooth and write it down
             Sm, Cm, Dm = exact(band, Q, r, f_abs[m])
-            li = int(np.argmax(Sm))
-            snr = float(10 * np.log10(max(Sm[li], 1e-300) / floor))
-            snr_l = float(10 * np.log10(max(Sm[li], 1e-300) / loc[m]))
-            comb["lines"][int(k)] = (f_abs[m], float(abs(Cm[li])), snr, float(LAMS[li]),
-                                     float(Dm[li]), float(Sm[li]))
-            free = owned.size == 0 or np.min(np.abs(owned - fk)) > 2.0 / band.T
-            if min(snr, snr_l) >= MIN_SNR_DB - 3 and (free or dup):
+            snr = float(10 * np.log10(max(Sm, 1e-300) / floor))
+            comb["lines"][int(k)] = (f_abs[m], float(abs(Cm)), snr, float(Dm))
+            # strong teeth (>= 9 dB over noise) get subtracted from the next round on
+            if snr >= MIN_SNR_DB - 3:
                 comb["ks"].append(int(k))
         if dup:
             # The same comb again. Either lines that were under the (then higher) floor
-            # have surfaced -- give them columns -- or its envelope was too stiff.
+            # have surfaced give them columns or its envelope was too stiff.
             old = dup[0]
             new = set(comb["ks"]) - set(old["ks"])
+            # new strong teeth appeared: add them to the old comb
             if new:
                 old["ks"] = sorted(set(old["ks"]) | new)
                 for k in new:
                     old["lines"][k] = comb["lines"][k]
+            # none new: let the old comb's volume curve bend more
             elif old["P"] < P_COMB + 4:
                 old["P"] += 2
+            # still coming back: give up and ignore its teeth and this peak
             else:
                 hw = 1.0 / band.T
                 masked += [((k + old["delta"]) * band.f0 - hw, (k + old["delta"]) * band.f0 + hw)
                            for k in old["ks"]]
                 masked.append((f_abs[j] - hw, f_abs[j] + hw))
             continue
+        # no strong teeth: probably junk, ignore this peak from now on
         if not comb["ks"]:
             masked.append((f_abs[j] - 1.0 / band.T, f_abs[j] + 1.0 / band.T))
             continue
+        # a real new comb: gets subtracted in the next round
         band.combs.append(comb)
-    _local_visibility(band)
     return band
 
 
@@ -464,71 +500,52 @@ RESOLVED = 0.5            # a line whose atom keeps less than half its norm outs
                           # nuisance span is mostly harmonic: its amplitude is not measurable
 
 
-def local_floor(band, r):
-    """(f_rel, floor): running median (+-f0/4) of a Hann periodogram of r, over ln 2."""
-    t = band.t - band.t[0]
-    w = sg.windows.hann(t.size)
-    nfft = int(2 ** np.ceil(np.log2(8 * t.size)))
-    P = np.abs(np.fft.fft(r * w, nfft)) ** 2 / np.sum(w ** 2)
-    f = np.fft.fftfreq(nfft, 1 / band.fs_d)
-    o = np.argsort(f)
-    f, P = f[o], P[o]
-    W = max(5, int(round(0.5 * band.f0 / (f[1] - f[0]))) | 1)
-    return f, median_filter(P, size=W, mode="nearest") / np.log(2)
-
-
-def _local_visibility(band):
-    """Judge every comb line against the floor in its own neighbourhood.
-
-    Detection uses one floor for the band (a local one lets the scan's sidelobes pass as
-    lines). Deciding which comb lines are *visible* is different: a line in the leakage
-    skirt of a huge harmonic can be loud and still be leakage. So compare its score with
-    a running median (+-f0/4) of a Hann periodogram of the final residual.
-    """
-    Q = nuisance(band)
-    r = band.y - Q @ (Q.conj().T @ band.y)
-    f, loc = local_floor(band, r)
-    for c in band.combs:
-        for k, v in c["lines"].items():
-            fl = float(np.interp(v[0] - band.fc, f, loc))
-            c["lines"][k] = v[:6] + (float(10 * np.log10(v[5] / max(fl, 1e-300))),)
-
-
 def refine_mode(band, ci, n, J=3, n_f=61, n_lam=41):
-    """Frequency and decay of the mode whose carrier is line n of comb ci.
+    """Exact frequency, decay and loudness of the mode tooth n of comb ci.
 
-    Every line of a mode's comb sits at f_m + j f0 with one decay, so fit (f_m, lam)
-    jointly on the carrier and its visible sidebands |j| <= J, each line with its own
-    complex amplitude, the whole comb taken out of the nuisance. Grid search (the score
-    is not convex in lam for short-lived lines) over f_m +- 1/T and lam in [0, LAM_MAX],
-    summing the lines' matched scores (they are ~orthogonal, f0 >> 1/T apart).
-    Returns f_m (Hz), lam (1/s), |c| of the carrier (baseband amplitude at window start).
+    The only place decay is measured. Guessing game: for many (frequency, decay) pairs,
+    build a test tone that fades exactly like that and see how well it matches the
+    recording; the best pair wins. The mode tooth and its visible neighbours (up to J
+    each side) are matched together, since all teeth of one mode share one offset and
+    one decay. Grid instead of an optimiser: for short-lived lines the score can have
+    several bumps along the decay axis. Coarse grid (f +- 1/T, lam 0..LAM_MAX), then a
+    fine grid around the best cell.
+    Returns f (Hz), lam (1/s), loudness of the tooth at window start, teeth used.
     """
     comb = band.combs[ci]
+    # teeth to match: the mode tooth plus its clearly visible neighbours
     prof = comb_profile(band, comb)
     js = [0] + [j for j in range(-J, J + 1) if j and n + j in prof and prof[n + j][1]]
+    # subtract everything except this comb, so y holds the comb plus noise
     saved = comb["ks"]
     comb["ks"] = []
     Q = nuisance(band)
     comb["ks"] = saved
     t = band.t - band.t[0]
     y = band.y - Q @ (Q.conj().T @ band.y)
+
     def grid(fg, lg):
+        """Score every (frequency in fg, decay in lg) pair; return the best one."""
         total = np.zeros((lg.size, fg.size))
         carrier = np.zeros((lg.size, fg.size), complex)
         for j in js:
+            # test tones at every guessed frequency, shifted to tooth j
             E = np.exp(2j * np.pi * np.outer(t, fg + j * band.f0 - band.fc))
             for il, lam in enumerate(lg):
+                # let them fade at the guessed decay
                 A = E * np.exp(-lam * t)[:, None]
+                # drop the part the subtraction would take anyway (as in exact)
                 A = A - Q @ (Q.conj().T @ A)
                 na = np.sum(np.abs(A) ** 2, 0)
                 num = A.conj().T @ y
+                # how well each test tone matches, added up over the teeth
                 total[il] += np.abs(num) ** 2 / na
                 if j == 0:
                     carrier[il] = num / na
         il, jf = np.unravel_index(int(np.argmax(total)), total.shape)
         return fg[jf], lg[il], carrier[il, jf]
 
+    # coarse pass: +- 1/T around the tooth, decay 0..LAM_MAX
     f_c = comb["lines"][n][0]
     span = 1.0 / band.T
     f1, l1, _ = grid(f_c + np.linspace(-span, span, n_f), np.linspace(0.0, LAM_MAX, n_lam))
@@ -551,15 +568,16 @@ def comb_profile(band, comb):
     """k -> level in dB with d/dt divided out; lines under MIN_SNR_DB get the floor
     level at that frequency instead, marked as an upper bound."""
     prof = {}
-    for k, (f, amp, snr, _, frac, _, snr_loc) in comb["lines"].items():
-        if k < 0 or frac < RESOLVED:
+    for k, (f, amp, snr, frac) in comb["lines"].items():
+        if frac < RESOLVED:
             continue
+        # fix higher freq = louder by dividing through the f
         lev = 20 * np.log10(amp / f)
-        snr_v = min(snr, snr_loc)
-        if snr_v >= MIN_SNR_DB:
+        # only keep lines above the minimum snr
+        if snr >= MIN_SNR_DB:
             prof[k] = (lev, True)
         else:
-            prof[k] = (lev - snr_v + MIN_SNR_DB, False)   # what MIN_SNR_DB would have needed
+            prof[k] = (lev - snr + MIN_SNR_DB, False)     # what MIN_SNR_DB would have needed
     return prof
 
 
@@ -574,20 +592,29 @@ def symmetry(prof, n):
     under the floor counts only if the visible one is the louder (else they could be equal).
     """
     d, w = [], []
+    # compare the pairs n+1 vs n-1, n+2 vs n-2, n+3 vs n-3
     for j, wj in enumerate(SYM_W, start=1):
+        # skip the pair if one tooth is missing (untrusted or outside the band)
         if n + j not in prof or n - j not in prof:
             continue
+        # a = right tooth, b = left tooth; va / vb = visible (measured) or only "at most"
         (a, va), (b, vb) = prof[n + j], prof[n - j]
+        # both measured: their gap
         if va and vb:
             dj = abs(a - b)
+        # one measured and louder than the other's limit: gap is at least this
         elif va and a > b:
             dj = a - b
         elif vb and b > a:
             dj = b - a
+        # otherwise they could be equal: no information
         else:
             continue
+        # cap each pair so one spoilt pair cannot decide alone
         d.append(min(dj, SYM_CLIP_DB))
         w.append(wj)
+    # weighted mean gap (0 = symmetric) and pairs used; no pairs also gives 0.0,
+    # so check the count: 0 pairs means "no information", not "perfectly symmetric"
     return (float(np.average(d, weights=w)) if d else 0.0), len(d)
 
 
@@ -595,19 +622,27 @@ def choose_carrier(band, comb, mu, sigma):
     """Candidate k with (k + delta) in mu +- 3 sigma: the one about which the comb is most
     symmetric, among those that are visible themselves. Returns dict or None."""
     prof = comb_profile(band, comb)
+    # candidates: visible teeth inside Gabrielli's expected range mu +- 3 sigma
     cands = [k for k in prof if prof[k][1] and abs(k + comb["delta"] - mu) <= 3 * sigma]
+    # no candidate: this comb is not the mode
     if not cands:
         return None
     vis = {k: v[0] for k, v in prof.items() if v[1]}
     rows = []
     for n in cands:
+        # how lopsided the comb is around this tooth
         asym, npairs = symmetry(prof, n)
+        # how much louder than its loudest visible neighbour (not used for the ranking)
         others = [vis[k] for k in vis if 0 < abs(k - n) <= len(SYM_W)]
         margin = vis[n] - max(others) if others else np.inf
+        # distance from Gabrielli's mean in sigma
         z = (n + comb["delta"] - mu) / sigma
         rows.append(dict(k=n, asym=asym, npairs=npairs, margin=margin, z=z))
+    # penalty = asymmetry + 0.5 z^2, lowest wins; with 0 pairs asym is 0 for all,
+    # so the tooth closest to Gabrielli's mean wins
     rows.sort(key=lambda r: (r["asym"] + 0.5 * r["z"] ** 2))
     best = rows[0]
+    # penalties of winner and runner-up: a big gap means a clear decision
     best["runner_up"] = rows[1]["asym"] + 0.5 * rows[1]["z"] ** 2 if len(rows) > 1 else np.inf
     best["score"] = best["asym"] + 0.5 * best["z"] ** 2
     return best
@@ -616,49 +651,28 @@ def choose_carrier(band, comb, mu, sigma):
 # %%
 # ---------- one recording ----------
 
-LOW_BAND = (0.1, 0.95)    # x f0: below the fundamental only carriers of low modes live
-SUB_LAM_MAX = 20.0        # 1/s (174 dB/s); Gabrielli's subs decay at 9 and 138 dB/s
 HALF_SIDE = 3.2           # band reaches this many f0 past the prior window, for sidebands
-DOMINANT_DB = 6.0         # a comb sharing delta with a low comb must dominate this much
 MAX_ASYM_DB = 6.0         # a mode's comb is symmetric about it; worse than this is not a comb
 MIN_MARGIN_DB = -10.0     # carrier vs loudest other line of its comb. Where the tine swings
                           # across the pole the carrier drops below its sidebands (~ -3 dB in
                           # the synthetic bass), but not by tens of dB: that is leakage.
 
 
-def fundamental_amp(x, fs, f0, i_start, n=None):
-    """Amplitude of the f0 line at i_start (full rate, cubic envelope over 50 ms)."""
-    n = n or int(0.05 * fs)
-    t = np.arange(n) / fs
-    A = line_cols(t, np.array([f0]), 3)
-    A = np.hstack([A, A.conj()])
-    c, *_ = np.linalg.lstsq(A, x[i_start:i_start + n].astype(complex), rcond=None)
-    return float(2 * abs(c[0] - c[1] + c[2] - c[3]))   # Legendre_p(-1) = (-1)^p
-
-
 def analyze_recording(x, fs, f0_guess, modes=MODES, name=("", "")):
     """All modes of one recording. Returns (list of dicts, context dict)."""
+    # when the hammer hits, and how long to look (0.3-1.5 s)
     i_on = onset(x)
     T = window_len(f0_guess)
     i5 = i_on + int(0.005 * fs)
+    # get exact f0
     f0 = refine_f0(x[i5:i5 + int(T * fs)], fs, f0_guess)
+    # determine hum freq
     f_hum = hum_freq(x, fs, f0)
-    tol = max(0.01, 1.0 / (T * f0))           # combs closer than one resolution cell
+    # pitch drift of the fundamental
     track = PhaseTrack(x, fs, f0, i_on, 0.005, T + 0.12)
 
-    lo_c = 0.5 * (LOW_BAND[0] + LOW_BAND[1]) * f0
-    low = pursue(make_band(x, fs, f0, lo_c, 0.5 * (LOW_BAND[1] - LOW_BAND[0]) * f0, i_on, T, f_hum,
-                           track))
-    # The sub-fundamental: the strongest *slowly decaying* comb below f0. The low band also
-    # holds the hammer's thump, which dies within tens of ms; taking that for the sub
-    # would only cause false collisions.
-    low_deltas, sub = [], None
-    slow = [c for c in low.combs if c["lam"] <= SUB_LAM_MAX]
-    if slow:
-        sub = slow[0]
-        low_deltas = [sub["delta"], (1.0 - sub["delta"]) % 1.0]
-
     out = []
+    # one row per mode: found with its numbers, or not found with a reason ("why")
     for name_m, (mu, sigma) in modes.items():
         row = dict(note=name[0], dyn=name[1], mode=name_m, mu=mu, f0=f0, found=False, T=T)
         # Skip only if the expected range itself is above F_MAX (Gabrielli: nothing above
@@ -667,54 +681,63 @@ def analyze_recording(x, fs, f0_guess, modes=MODES, name=("", "")):
             row["why"] = "above F_MAX"
             out.append(row)
             continue
+        # slice where the mode is expected (mu +- 3 sigma), plus room for its neighbour teeth
         guard = max(1.5 * f0, 30.0)
         lo_b = (mu - 3 * sigma - HALF_SIDE) * f0
         hi_b = min((mu + 3 * sigma + HALF_SIDE) * f0, 0.45 * fs - 2 * guard)
+        # find all combs in that slice
         band = pursue(make_band(x, fs, f0, 0.5 * (lo_b + hi_b), 0.5 * (hi_b - lo_b), i_on, T, f_hum,
                                 track))
         row["n_combs"] = len(band.combs)
+        # keep only plausible combs
         picks = []
         for ci, comb in enumerate(band.combs):
+            # best tooth of this comb; None = no tooth in the expected range
             ch = choose_carrier(band, comb, mu, sigma)
             if ch is None:
                 continue
+            # too lopsided, or the tooth is much quieter than its neighbours
             if ch["asym"] > MAX_ASYM_DB or ch["margin"] < MIN_MARGIN_DB:
                 continue
             # inside a harmonic's envelope bandwidth a line cannot be told from the harmonic
             if min(comb["delta"], 1 - comb["delta"]) * f0 < (p_harm(T) + 1) / (2 * T):
                 continue
-            near_low = any(_dist(comb["delta"], d) < tol for d in low_deltas)
-            if near_low and not ch["margin"] >= DOMINANT_DB:
-                continue
             # compare combs by carrier level, not SNR: the floor at detection drops as
             # combs are removed, so later (weaker) combs would look better
             f_k, amp_k, snr = comb["lines"][ch["k"]][:3]
-            picks.append((20 * np.log10(amp_k / f_k), snr, ci, ch, near_low))
+            picks.append((20 * np.log10(amp_k / f_k), snr, ci, ch))
+        # nothing plausible left: not found
         if not picks:
             row["why"] = "no comb centred in the prior window"
             out.append(row)
             continue
-        _, snr, ci, ch, near_low = max(picks, key=lambda p: p[0])
+        # the loudest survivor is the mode
+        _, snr, ci, ch = max(picks, key=lambda p: p[0])
+        # measure it exactly: frequency, decay, loudness
         f, lam, amp, js = refine_mode(band, ci, ch["k"])
+        # dies away almost at once: the hammer, not a mode
         if lam > 0.95 * LAM_MAX:
             row["why"] = "decay at the limit: an impact transient"
             out.append(row)
             continue
-        a1 = fundamental_amp(x, fs, f0, i_on + int(round(band.t[0] * fs)))
+        # fundamental at the window start, from the phase track (fitted with harmonics 2
+        # and 3 over the whole window, so they do not leak into it)
+        a1 = 2 * abs(track.envelope(band.t[:1])[0])
+        # write down the result: frequency, decay, loudness re the fundamental, confidence
         row.update(found=True, ratio=f / f0, f=f, lam=lam, lam_db=8.686 * lam,
                    amp_db=20 * np.log10(2 * amp / a1), snr_db=snr, delta=band.combs[ci]["delta"],
                    k=ch["k"], asym_db=ch["asym"], npairs=ch["npairs"], margin_db=ch["margin"],
-                   score=ch["score"], runner_up=ch["runner_up"], near_low=near_low,
+                   score=ch["score"], runner_up=ch["runner_up"],
                    t_start=float(band.t[0]), n_candidates=len(picks), n_lines=len(js))
         out.append(row)
-    ctx = dict(f0=f0, f_hum=f_hum, T=T, low_deltas=low_deltas, low=low, track=track, sub=sub)
+    # in-between values, for inspection
+    ctx = dict(f0=f0, f_hum=f_hum, T=T, track=track)
     return out, ctx
 
 
 # %%
 # ---------- the whole keyboard ----------
 
-RAW_FILE = "tine_modes_raw.json"
 DYNS = ("p", "mp", "mf", "f")
 
 
@@ -723,18 +746,11 @@ def _job(args):
     import warnings
     warnings.filterwarnings("ignore")
     x, fs = load(note, dyn)
-    rows, ctx = analyze_recording(x, fs, f0_guess, name=(note, dyn))
-    sub = ctx["sub"]
-    for r in rows:
-        r["sub_ratio"] = np.nan if sub is None else float(
-            max(sub["lines"].items(), key=lambda kv: kv[1][1])[1][0] / ctx["f0"]) if sub["lines"] else np.nan
-        r["f_hum"] = ctx["f_hum"]
-    return [{k: (float(v) if isinstance(v, (np.floating, np.integer)) else v) for k, v in r.items()}
-            for r in rows]
+    rows, _ = analyze_recording(x, fs, f0_guess, name=(note, dyn))
+    return rows
 
 
-def run_all(workers=None, out=RAW_FILE):
-    import json
+def run_all(workers=None):
     from concurrent.futures import ProcessPoolExecutor
     d = np.load("fundamentals.npz", allow_pickle=True)
     notes, dyns, table = list(d["notes"]), list(d["dyns"]), d["table"]
@@ -744,8 +760,6 @@ def run_all(workers=None, out=RAW_FILE):
         for i, res in enumerate(ex.map(_job, jobs)):
             rows += res
             print(f"{i + 1}/{len(jobs)} {jobs[i][0]}-{jobs[i][1]}", flush=True)
-    with open(out, "w") as fh:
-        json.dump(rows, fh, indent=0, default=float)
     return rows
 
 
@@ -773,7 +787,7 @@ def summarise(rows):
             hits = [r for r in rn if r["mode"] == mode and r["found"]]
             row = dict(note=note, mode=mode, f0=f0_p, n_found=len(hits), n_agree=0,
                        f=np.nan, ratio=np.nan, lam_db=np.nan, amp_db=np.nan, spread_hz=np.nan,
-                       dyns="", near_low=False)
+                       dyns="")
             if hits:
                 T = hits[0]["T"]
                 tol = lambda f: max(1.5 / T, 0.0025 * f)
@@ -787,8 +801,7 @@ def summarise(rows):
                 row.update(n_agree=len(best), f=float(np.median(fs_)), ratio=float(np.median(fs_) / f0_p),
                            lam_db=float(np.median([g["lam_db"] for g in best])),
                            amp_db=float(np.median([g["amp_db"] for g in best])),
-                           spread_hz=float(np.ptp(fs_)), dyns=",".join(g["dyn"] for g in best),
-                           near_low=any(g["near_low"] for g in best))
+                           spread_hz=float(np.ptp(fs_)), dyns=",".join(g["dyn"] for g in best))
             row["confirmed"] = row["n_agree"] >= MIN_AGREE
             out.append(row)
     return out
@@ -804,10 +817,54 @@ def save_table(summary, path=TABLE_FILE):
              confirmed=get("confirmed"), f0=get("f0")[:, 0])
 
 
+# Runs the analysis only if there is no table yet; delete tine_modes.npz to redo it.
 if __name__ == "__main__":
-    import json, os
-    if not os.path.exists(RAW_FILE):
-        run_all()
-    with open(RAW_FILE) as fh:
-        summary = summarise(json.load(fh))
-    save_table(summary)
+    import os
+    if not os.path.exists(TABLE_FILE):
+        save_table(summarise(run_all()))
+
+
+# %%
+# ---------- keyboard plot, in the layout of Gabrielli et al. 2020, Fig. 20 ----------
+
+
+def plot_keyboard(path=TABLE_FILE):
+    import matplotlib.pyplot as plt
+
+    d = np.load(path, allow_pickle=True)
+    f_e0 = f0_nominal("E0")
+    key = np.array([round(12 * np.log2(f0_nominal(n) / f_e0)) + 1 for n in d["notes"]])
+    ratio, conf = d["ratio"], d["confirmed"].astype(bool)
+    single = np.isfinite(ratio) & ~conf
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    for mu, _ in MODES.values():
+        ax.axhline(mu, ls="--", color="0.4", lw=1.2, zorder=1)
+    k = np.linspace(1, 73, 400)
+    f0_k = f_e0 * 2.0 ** ((k - 1) / 12)
+    ax.plot(k, 10e3 / f0_k, ":", color="k", lw=2, label="10 kHz (as in the paper)")
+    ax.plot(k, F_MAX / f0_k, ":", color="0.4", lw=1, label=f"{F_MAX / 1e3:.0f} kHz (our search limit)")
+    kk = np.broadcast_to(key[:, None], ratio.shape)
+    ax.scatter(kk[single], ratio[single], s=45, facecolors="none", edgecolors="0.55", lw=1.2,
+               zorder=2, label="one dynamic only")
+    ax.scatter(kk[conf], ratio[conf], s=45, color="#3b6fd4", zorder=3,
+               label="confirmed ($\\geq$2 dynamics)")
+
+    ax.set_xlim(0, 74)
+    ax.set_ylim(0, 100)
+    ax.set_xlabel("key")
+    ax.set_ylabel("f0 ratio")
+    ax.grid(axis="x", color="0.92")
+    top = ax.secondary_xaxis("top")
+    top.set_xticks(np.arange(1, 74, 12), [f"E{i}" for i in range(7)])
+    ax.legend(loc="upper right", frameon=False)
+    ax.set_title("Tine modes over the keyboard (our recordings), "
+                 "in the layout of Gabrielli et al. 2020, Fig. 20")
+    fig.tight_layout()
+    plt.show()
+
+
+if __name__ == "__main__":
+    plot_keyboard()
+
+# %%
