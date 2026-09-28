@@ -1,6 +1,6 @@
 """Decay of the inharmonic lines found by inharmonic_scan.py, over the whole recording.
 
-Per key and dynamic, the strongest sub-fundamental, 7.x and 20.x line of the 64-period scan is
+Per key and dynamic, the strongest sub-fundamental, 7.x, 20.x and 39.x line of the 64-period scan is
 demodulated over T_MAX seconds (mixed to 0 Hz, Kaiser low-pass), and a straight line is fitted
 to its log envelope from 50 ms until it stays within 10 dB of the noise.  The low-pass width is
 set by the nearest neighbour: harmonics n f_0, 0 Hz, and the recordings' 60 Hz mains hum (a hum
@@ -17,12 +17,13 @@ lambda / sigma_1 and Q = pi f / lambda.
 Hyperparameters
 | Name | Value | Meaning |
 | --- | --- | --- |
-| `CLASSES` | sub < 1, 7.x 5.5-7.6, 20.x 18.5-22.5 | ratio bands; the strongest parent line of each per key |
+| `CLASSES` | sub < 1, 7.x 5.5-7.6, 20.x 18.5-22.5, 39.x 36-43 | ratio bands; the strongest parent line of each per key |
 | `T_MAX`, `DEC` | 7.5 s, 48 | analysed length after onset; envelope decimation (1 kHz at 48 kHz) |
 | `BW_FRAC`, `BW_RANGE` | 0.3, 2-40 Hz | low-pass width: fraction of the distance to the nearest neighbour, clipped |
 | `STOPBAND_DB` | 80 dB | Kaiser rejection |
 | `HUM` | 60 Hz x k | mains hum in every recording, treated as a neighbour |
 | `FIT_FROM`, `FIT_SNR` | 50 ms, 10 dB | fit window start; envelope samples used must stand this far over the noise |
+| `T_REF` | 0.1 s | time after onset at which the fitted line level is reported (amplitude for c_n) |
 """
 import os
 
@@ -32,13 +33,13 @@ import scipy.signal as sg
 
 import inharmonic_scan as scan
 
-CLASSES = [("sub", 0.0, 1.0), ("7.x", 5.5, 7.6), ("20.x", 18.5, 22.5)]
+CLASSES = [("sub", 0.0, 1.0), ("7.x", 5.5, 7.6), ("20.x", 18.5, 22.5), ("39.x", 36.0, 43.0)]
 RANGES = [(0, 24, "E0-D#2"), (24, 48, "E2-D#4"), (48, 73, "E4-E6")]
 T_MAX, DEC = 7.5, 48
 BW_FRAC, BW_RANGE = 0.3, (2.0, 40.0)
 STOPBAND_DB = 80.0
 HUM = 60.0 * np.arange(1, 40)
-FIT_FROM, FIT_SNR = 0.05, 10.0
+FIT_FROM, FIT_SNR, T_REF = 0.05, 10.0, 0.1
 OUT = "plots"
 
 
@@ -58,9 +59,9 @@ def demod(x, fs, f, bw):
     return np.abs(e[:x.size - taps.size // 2:DEC])
 
 
-def envelope(note, dyn, f, f0):
-    """Time axis, envelope (dB), noise level (dB) and filter width for the line at f."""
-    x, fs = scan.load_wave(note, dyn)
+def envelope(x, fs, f, f0):
+    """Time axis after onset, envelope (dB), noise level (dB) and filter width for the line at
+    f in the signal x (a recording or a model render)."""
     i0 = np.argmax(np.abs(x) > scan.ONSET_FRAC * np.abs(x).max())
     x = x[i0:i0 + int(T_MAX * fs)]
     others = np.concatenate([np.arange(1, 60) * f0, [0.0], HUM])
@@ -75,10 +76,10 @@ def envelope(note, dyn, f, f0):
 
 def fit(t, L, noise_db):
     """Decay rate over the leading run above noise + FIT_SNR, over its early and late halves,
-    rms residual (dB) and the end of the fitted window."""
+    rms residual (dB), the end of the fitted window and the fitted level (dB) at T_REF."""
     use = (t > FIT_FROM) & (L > noise_db + FIT_SNR)
     if use.sum() < 20:
-        return np.nan, np.nan, np.nan, np.nan, 0.0
+        return np.nan, np.nan, np.nan, np.nan, 0.0, np.nan
     idx = np.flatnonzero(use)
     gaps = np.flatnonzero(np.diff(idx) > 50)                    # a break of > 50 ms ends the run
     last = idx[gaps[0]] if gaps.size else idx[-1]
@@ -88,7 +89,7 @@ def fit(t, L, noise_db):
     res = 8.686 * np.sqrt(np.mean((yy - np.polyval(p, tt)) ** 2))
     h = tt.size // 2
     early, late = -np.polyfit(tt[:h], yy[:h], 1)[0], -np.polyfit(tt[h:], yy[h:], 1)[0]
-    return -p[0], early, late, res, tt[-1]
+    return -p[0], early, late, res, tt[-1], 8.686 * np.polyval(p, T_REF)
 
 
 def measure_all(notes, f0s, sig1):
@@ -101,12 +102,12 @@ def measure_all(notes, f0s, sig1):
                 if not ps:
                     continue
                 p = max(ps, key=lambda p: p["mean_db"])
-                t, L, nz, bw = envelope(k["note"], dyn, p["f"], f0s[i])
-                lam, early, late, res, tend = fit(t, L, nz)
+                t, L, nz, bw = envelope(*scan.load_wave(k["note"], dyn), p["f"], f0s[i])
+                lam, early, late, res, tend, l_ref = fit(t, L, nz)
                 at = {tq: L[np.argmin(np.abs(t - tq))] - nz for tq in (0.1, 1.0, 3.0, 6.0)}
                 rows.append(dict(dyn=dyn, note=k["note"], i=i, cls=c, ratio=p["ratio"], f=p["f"], bw=bw,
-                                 lam=lam, early=early, late=late, res=res, tend=tend, sig1=sig1[i],
-                                 at=at, t=t, L=L, nz=nz))
+                                 lam=lam, early=early, late=late, res=res, tend=tend, l_ref=l_ref,
+                                 sig1=sig1[i], at=at, t=t, L=L, nz=nz))
     return rows
 
 
@@ -164,7 +165,7 @@ def plot_decay_vs_key(rows, notes, f0s, sig1, path):
     x = np.arange(len(notes))
     ax[0].semilogy(x, sig1, "k-", lw=1.5, label="fundamental sigma_1 (step 1)")
     ax[1].loglog(f0s, sig1, "k-", lw=1.5, label="fundamental: sigma_1 vs f_0")
-    mk = {"sub": "o", "7.x": "s", "20.x": "^"}
+    mk = {"sub": "o", "7.x": "s", "20.x": "^", "39.x": "v"}
     for c, _, _ in CLASSES:
         for dyn, col in (("f", "C0"), ("p", "C3")):
             rr = [r for r in rows if r["cls"] == c and r["dyn"] == dyn and np.isfinite(r["lam"]) and r["lam"] > 0]

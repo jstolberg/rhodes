@@ -14,19 +14,22 @@
 # the frames with `L_INIT` samples each (a coarse view is enough to rank
 # basins); after each round only the best `KEEP` of a key's starts survive.
 # The result -- the surviving candidates, their Adam state and scores -- is
-# cached, so it can be inspected or continued.
+# cached; the best candidate of every key starts the fit (step2_fft.py).
+#
+#     python step2_init.py [real|syn] [stride]
 #
 # | Name | Value | Meaning |
 # | --- | --- | --- |
-# | `TAG` | real / syn | which target features |
+# | `TAG`, `STRIDE` | argv: real / syn; `KEY_STRIDE` | which target features; every k-th key |
 # | `PD_INIT` | 2 mm | $p_d$ of every start |
-# | `PO_STARTS`, `A0_STARTS` | 20 x 3 | starts in $p_o$ (0.3 mm apart, closer than any basin) and $A_0$ |
+# | `PO_STARTS`, `A0_STARTS` | 20 x 3 | starts in $p_o$ (0.2 mm apart, closer than any basin) and $A_0$ |
 # | `ROUND_STEPS`, `KEEP` | (20, 20, 40), 1/3 | Adam steps per round; fraction of a key's starts kept after each round but the last: 60 -> 20 -> 7 |
 # | `K_INIT`, `L_INIT` | 4, 768 | frames and samples per frame of the reduced evaluation |
 
 # %%
 import os
 import pickle
+import sys
 import time
 
 import jax
@@ -35,7 +38,8 @@ import numpy as np
 
 from step2_lib import *
 
-TAG          = "syn"
+TAG          = sys.argv[1] if len(sys.argv) > 1 else "syn"
+STRIDE       = int(sys.argv[2]) if len(sys.argv) > 2 else KEY_STRIDE
 PD_INIT      = 2.0e-3
 PO_STARTS    = np.linspace(0.15e-3, PO_MAX - 0.15e-3, 20)
 A0_STARTS    = np.array([0.1e-3, 0.5e-3, 2.5e-3])
@@ -44,7 +48,7 @@ KEEP         = 1 / 3
 K_INIT, L_INIT = 4, 768
 
 
-def init_path(tag, stride=KEY_STRIDE):
+def init_path(tag, stride=STRIDE):
     return f"{CACHE}/init_{tag}_{stride}.pkl"
 
 
@@ -87,20 +91,6 @@ def multi_start(keys, Ht, eta, mask):
                 notes=keys["notes"], rounds=ROUND_STEPS)
 
 
-def continue_init(cache, keys, Ht, eta, mask, steps):
-    """More Adam steps on the cached candidates from their cached Adam state."""
-    scores = scorer(keys, Ht, eta, mask)
-    q = {k: jnp.asarray(v) for k, v in cache["q"].items()}
-    q, _, state = fit(q, lambda q: scores(q).sum(), steps, label=f"continue, {len(cache['scores'])} starts: ", state=cache["state"])
-    L = np.asarray(jax.jit(scores)(q))
-    top, kk = np.argsort(L, axis=0), np.arange(len(keys["f0s"]))
-    q = {k: v[top, kk] for k, v in q.items()}
-    state = jax.tree_util.tree_map(lambda v: v[top, kk] if getattr(v, "ndim", 0) == 2 else v, state)
-    print("  best per key:", np.round(L[top, kk][0], 4))
-    return dict(cache, q={k: np.asarray(v) for k, v in q.items()}, state=jax.device_get(state), scores=L[top, kk],
-                rounds=tuple(cache["rounds"]) + (steps,))
-
-
 def winner(cache):
     """Starting theta of the fit: the best candidate of every key (A0_raw (Mk, 1))."""
     q = cache["q"]
@@ -110,8 +100,8 @@ def winner(cache):
 
 # %%
 if __name__ == "__main__":
-    keys = load_keys()
-    Ht, eta, mask = features(TAG, keys)
+    keys = load_keys(STRIDE)
+    Ht, eta, mask = features(TAG, keys, STRIDE)
     report_mask(mask)
     t0 = time.time()
     cache = multi_start(keys, Ht, eta, mask)

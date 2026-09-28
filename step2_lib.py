@@ -7,7 +7,8 @@ Hann frames; the loss is the mean squared log-magnitude difference over the cell
 noise floor, with kappa the closed-form level match.
 
 p_o, p_d, sigma_0 are per key, A_0 per key and dynamic.  The decay of step 1
-(fundamentals.npz) sets the frame span per key and the starting sigma_0.
+(fundamentals.npz) sets the frame span per key and the starting sigma_0.  Keys in FLAGGED
+are fitted like the others and marked in the output, for exclusion downstream.
 
 Used by step2_init.py (initial-value finder) and step2_fft.py (the fit).
 
@@ -26,11 +27,12 @@ Hyperparameters
 | `NOISE_MARGIN` | 3 | keep cells with |H_t| > margin x noise (9.5 dB; noise is Rayleigh, 3 passes ~3% of noise cells) |
 | `R_FIX`, `A_FIX`, `M_FIX` | 4 mm, 1.3 mm, 1 | pickup geometry from photos (fixed) |
 | `SURF_N` | 64 | surface grid |
-| `DISP_MAX`, `N_TABLE` | 6 mm, 4096 | A_0 <= DISP_MAX (bass tines sweep fully past the pickup); 3 um table |
-| `PO_MAX` | 3/2 r = 6 mm | p_o bounded to (0, PO_MAX) via sigmoid (also the table extent) |
+| `DISP_MAX`, `N_TABLE` | 10 mm, 8192 | A_0 <= DISP_MAX (bass tines sweep fully past the pickup); 2.6 um table |
+| `PO_MAX` | r = 4 mm | p_o bounded to (0, PO_MAX) via sigmoid: the tine rests over the pole (also the table extent) |
 | `PD_RANGE`, `N_PD` | 0.5-3.5 mm, 96 | p_d bounded to this range via sigmoid, tabulated on N_PD rows |
+| `FLAGGED` | F0, G0, D6 | samples detuned > 8 cents from their note (13-18, -9 cents; all others within 6.5) |
 | `LR` | 0.05 | Adam learning rate (all stages) |
-| `KEY_STRIDE` | 1 | fit every k-th key (1 = all 73, 24 = E0, E2, E4, E6); runtime scales with it |
+| `KEY_STRIDE` | 1 | fit every k-th key (1 = all 73, 6 = 13 keys, 24 = E0, E2, E4, E6); runtime scales with it |
 | `CACHE` | cache/ | target features and init results |
 """
 from __future__ import annotations
@@ -71,11 +73,12 @@ NOISE_MARGIN = 3.0
 
 R_FIX, A_FIX, M_FIX = 4e-3, 1.3e-3, 1.0
 SURF_N       = 64
-DISP_MAX, N_TABLE = 6.0e-3, 4096
-PO_MAX       = 3.0 / 2.0 * R_FIX
+DISP_MAX, N_TABLE = 10.0e-3, 8192
+PO_MAX       = R_FIX
 PD_RANGE, N_PD = (0.5e-3, 3.5e-3), 96
+FLAGGED      = ["F0", "G0", "D6"]
 LR           = 0.05
-KEY_STRIDE   = 1       # every k-th key (24 -> E0, E2, E4, E6; library names are one octave low)
+KEY_STRIDE   = 1      # every k-th key (24 -> E0, E2, E4, E6; library names are one octave low)
 
 HARM = np.arange(1, N_HARM + 1)
 
@@ -112,7 +115,8 @@ def load_keys(stride=KEY_STRIDE):
     have    = np.isfinite(sig_all)
     sig_all = np.exp(np.interp(np.arange(len(notes)), np.where(have)[0], np.log(sig_all[have])))
     sel     = np.arange(0, len(notes), stride)
-    keys = dict(notes=notes[sel], f0s=f0_all[sel], sig1=sig_all[sel], tfit=frame_span(f0_all[sel], sig_all[sel]))
+    keys = dict(notes=notes[sel], f0s=f0_all[sel], sig1=sig_all[sel], tfit=frame_span(f0_all[sel], sig_all[sel]),
+                flag=np.isin(notes[sel], FLAGGED))
     print(f"{len(sel)} keys: {keys['notes'][0]} ({keys['f0s'][0]:.1f} Hz) ... {keys['notes'][-1]} ({keys['f0s'][-1]:.1f} Hz)")
     print("step-1 sigma (1/s):", np.round(keys["sig1"], 3), " frame span (s):", np.round(keys["tfit"], 2))
     return keys
@@ -239,7 +243,7 @@ def predict(theta, keys, kidx=None, L=L_FRAME):
     """log|H_s| for kappa = 1: (Mk, n_dyn, N_HARM, K), n_dyn = columns of A0_raw."""
     g, A0 = unpack(theta)
 
-    @jax.checkpoint                                           # recompute in backward: O(1) memory per cell
+    @jax.checkpoint                                         # recompute in backward: O(1) memory per cell
     def cell(A0, sig, f0, t_fit, p_o, p_d):
         return jnp.log(project_synth(A0, sig, f0, t_fit, p_o, p_d, TABLE, kidx, L))
 
