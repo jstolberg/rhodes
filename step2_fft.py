@@ -40,7 +40,6 @@
 # | `TAG`, `STRIDE` | argv: real / syn; `KEY_STRIDE` | which target features and init; every k-th key (`python step2_fft.py [real|syn] [stride]`) |
 # | `STEPS_A`, `STEPS_B`, `STEPS_C` | 300, 100, 300 | Adam steps of the three stages |
 # | `A0_SCAN` | 32 values, 0.01-9.5 mm | log-spaced $A_0$ scan per cell that starts stage B |
-
 # %%
 import pickle
 import sys

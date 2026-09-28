@@ -22,7 +22,7 @@ Hyperparameters
 | `ONSET_FRAC` | 0.05 | onset = first sample above this fraction of the peak |
 | `N_PERIODS` | 64 | frame length in periods of f_0: the 7.1 f_0 partial and its intermodulation products at 5.1, 6.1 f_0 fall > 6 bins from a harmonic |
 | `K_FRAMES` | 12 | frames per sample, spread evenly over the frame span |
-| `T_FIT`, `DECAY_SPAN` | 3 s, 4 | frame span per key min(T_FIT, 4 / sigma_1) after t_0, sigma_1 from step 1 |
+| `T_FIT`, `DECAY_SPAN` | 6 s, 4 | frame span per key min(T_FIT, 4 / sigma_1) after t_0, sigma_1 from step 1 |
 | `L_FRAME` | 1024 | synthetic samples per frame (16 per period, Nyquist 8 f_0) |
 | `NOISE_MARGIN` | 3 | keep cells with |H_t| > margin x noise (9.5 dB; noise is Rayleigh, 3 passes ~3% of noise cells) |
 | `R_FIX`, `A_FIX`, `M_FIX` | 4 mm, 1.3 mm, 1 | pickup geometry from photos (fixed) |
@@ -66,7 +66,7 @@ T_START      = 10e-3
 ONSET_FRAC   = 0.05
 N_PERIODS    = 64
 K_FRAMES     = 12
-T_FIT        = 3.0
+T_FIT        = 6.0
 DECAY_SPAN   = 4.0
 L_FRAME      = 1024
 NOISE_MARGIN = 3.0
