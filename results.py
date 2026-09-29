@@ -6,16 +6,16 @@
 #
 # | Step | Script | Result file |
 # | --- | --- | --- |
-# | 1 fundamental | `fundamental_measurement.py` | `fundamentals.npz` |
-# | 2 pickup and free oscillation | `step2_init.py`, `step2_fft.py` | `step2_fit.npz` |
-# | 3 hammer, incl. $c_0$ | `hammer.py` | `step3_fit.npz` |
-# | 4 inharmonic modes | `step_5.py` (decays), `step6_modes.py` (excitation) | `step6_fit.npz` |
+# | 1 fundamental | `step1_fundamental.py` | `results/step1_fundamentals.npz` |
+# | 2 pickup and free oscillation | `step2_pickup.py` | `results/step2_pickup.npz` |
+# | 3 hammer, incl. $c_0$ | `step3_hammer.py` | `results/step3_hammer.npz` |
+# | 4 inharmonic modes | `step4_modes.py` (A: decays, B: excitation) | `results/step4_modes.npz` |
 #
 # Also needed: `cache/features_real_1.npz` (step 2 targets), `cache/step4_synthetic_check.npz`
 # (`step4_synthetic_check.py`) and the recordings in `Samples/`.
 #
 # Output: figures as PDF in `figures/`, all sentences and the mode table in `results_numbers.md`.
-# Run time about 10 minutes (step 5 runs on import, the full model is rendered for every
+# Run time about 10 minutes (step 4 runs on import, the full model is rendered for every
 # recording).
 
 # %%
@@ -27,8 +27,8 @@ import numpy as np
 from scipy.signal.windows import blackmanharris
 
 from model import calc_tau, epsilon, hammer2free
-from step2_lib import (DYNS, NOISE_MARGIN, PD_RANGE, T_START, TABLE, VELS, frame_times, hann,
-                       load_wave, onset, project_synth, project_target)
+from step2_pickup import (DYNS, NOISE_MARGIN, PD_RANGE, T_START, TABLE, VELS, frame_times, hann,
+                          load_wave, onset, project_synth, project_target)
 
 plt.rcParams.update({"font.size": 8, "axes.titlesize": 8, "axes.labelsize": 8, "legend.fontsize": 7,
                      "xtick.labelsize": 7, "ytick.labelsize": 7, "lines.linewidth": 1.0,
@@ -40,17 +40,17 @@ JF = DYNS.index("f")
 os.makedirs("figures", exist_ok=True)
 text = {}                               # sentences per section, written to results_numbers.md
 
-fund = np.load("fundamentals.npz", allow_pickle=True)
-fit2 = np.load("step2_fit.npz", allow_pickle=True)
-fit3 = np.load("step3_fit.npz", allow_pickle=True)
-fit6 = np.load("step6_fit.npz", allow_pickle=True)
+fund = np.load("results/step1_fundamentals.npz", allow_pickle=True)
+fit2 = np.load("results/step2_pickup.npz", allow_pickle=True)
+fit3 = np.load("results/step3_hammer.npz", allow_pickle=True)
+fit6 = np.load("results/step4_modes.npz", allow_pickle=True)
 notes = [str(n) for n in fit2["notes"]]
 M = len(notes)
 for d in (fund, fit3, fit6):                         # same keys in the same order everywhere
     assert [str(n) for n in d["notes"]] == notes
 assert list(fund["dyns"]) == list(DYNS) == list(fit6["dyns"])
-assert {"c_dyn", "measured"} <= set(fit6.files), "run the new step6_modes.py first"
-print("velocities VELS (step2_lib.py, used by hammer.py):", dict(zip(DYNS, VELS)))
+assert {"c_dyn", "measured"} <= set(fit6.files), "run step4_modes.py first"
+print("velocities VELS (step2_pickup.py, used by step3_hammer.py):", dict(zip(DYNS, VELS)))
 
 f0 = fit2["f0"]
 kappa, beta = float(fit2["kappa"]), float(fit3["beta"])
@@ -72,7 +72,7 @@ ok1 = tab["ok"]
 lam = np.where(ok1, tab["lam"], np.nan)                       # decay per recording (1/s)
 
 # tuning: equal temperament, A = 440 Hz; the library names are an octave low
-# (as f0_of in fundamental_measurement.py)
+# (as f0_of in step1_fundamental.py)
 NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 midi = np.array([(int(n[-1]) + 2) * 12 + NAMES.index(n[:-1]) for n in notes])
 nominal = 440.0 * 2.0 ** ((midi - 69) / 12)
@@ -103,7 +103,7 @@ print(f"Here:          {np.median(cents):+.1f} cents, {ok1.sum()}/{ok1.size}, b 
 # %% [markdown]
 # ## Step 2: pickup and free oscillation
 #
-# The fit residual is not stored in `step2_fit.npz`; it is recomputed here as in the step-2
+# The fit residual is not stored in `results/step2_pickup.npz`; it is recomputed here as in the step-2
 # loss: target and model projected onto $f_0 \dots 5 f_0$ in the step-2 frames, masked
 # mean squared log difference (cells above the noise).
 
@@ -159,10 +159,11 @@ say(S, f"On the {N_BASS} lowest keys, A_0 relative to f is {v_bass[0]:.2f}, {v_b
 # %% [markdown]
 # ## Step 4: inharmonic modes
 #
-# `step_5.py` runs on import (about 1 minute).
+# `step4_modes.py` runs on import (about 1 minute; it writes `results/step4_modes.npz` again,
+# with the same values).
 
 # %%
-import step_5 as s5                     # noqa: E402  (runs step 5 once)
+import step4_modes as s5                # noqa: E402  (runs step 4 once)
 
 names = list(s5.MODES)
 mu = np.array([s5.MODES[m][0] for m in names])
@@ -223,7 +224,7 @@ print("(synthetic check: saved result of step4_synthetic_check.py, run with the 
 
 
 def params(i, j):
-    # all modes of key i at dynamic j, as step6_render.py
+    # all modes of key i at dynamic j, as synth.step4
     k = ok6[i]
     return dict(c=jnp.r_[c0[i], c6[i, j][k]], lam=jnp.r_[fit2["sigma"][i], fit6["sig"][i][k]],
                 f_modes=jnp.r_[f0[i], fit6["f_modes"][i][k]], tau_0=float(fit3["tau0"][i]), beta=beta,
@@ -260,9 +261,9 @@ for key, m, ratio_f, g in gab:
 # %% [markdown]
 # ## Full model against the recordings
 #
-# Every recording is rendered as in `step6_render.py` and projected onto lines in the
-# step-2 frames (`project_target` of `step2_lib.py`): $f_0$, the harmonics $2 f_0 \dots 5 f_0$
-# and the modes.  The recording's mode is projected at the peak step 5 finds, the model's at
+# Every recording is rendered as in `synth.py` and projected onto lines in the
+# step-2 frames (`project_target` of `step2_pickup.py`): $f_0$, the harmonics $2 f_0 \dots 5 f_0$
+# and the modes.  The recording's mode is projected at the peak step 4 finds, the model's at
 # $f_n$; modes only on keys from 150 Hz up and only in the first frame (they die out within
 # it), against the noise 6 bins beside the line.  Only cells above the noise count.
 

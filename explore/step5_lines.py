@@ -40,7 +40,7 @@ import warnings
 import matplotlib.pyplot as plt
 import numpy as np
 
-from step2_lib import DYNS, T_START, load_wave, onset
+from step2_pickup import DYNS, T_START, load_wave, onset
 
 RATIOS       = np.array([7.1, 20.4, 39.7])
 SEARCH_REL   = np.array([0.06, 0.04, 0.04])     # one entry per ratio
@@ -79,7 +79,7 @@ def find_line(f, X_db, f_nom, f0, rel):
 
 # %%
 # ---------- search every recording ----------
-fit2  = np.load("step2_fit.npz", allow_pickle=True)
+fit2  = np.load("results/step2_pickup.npz", allow_pickle=True)
 notes = [str(n) for n in fit2["notes"]]
 f0    = fit2["f0"]                                   # the f_0 steps 2 and 3 used
 

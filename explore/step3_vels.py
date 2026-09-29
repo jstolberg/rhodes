@@ -12,7 +12,7 @@
 #    the scale, $c_0$ absorbs the rest).
 #
 # Both are compared with the assumed VELS by the rms residual per dynamic.  Output:
-# `step3_fit_vels.npz`; `step3_fit.npz` is not touched.
+# `step3_fit_vels.npz`; `results/step3_hammer.npz` is not touched.
 #
 # | Name | Value | Meaning |
 # | --- | --- | --- |
@@ -41,7 +41,7 @@ DYNS         = ["p", "mp", "mf", "f"]
 
 # %%
 # ---------- data of step 2 ----------
-fit2  = np.load("step2_fit.npz", allow_pickle=True)
+fit2  = np.load("results/step2_pickup.npz", allow_pickle=True)
 notes = fit2["notes"]
 M     = len(notes)
 f0    = jnp.asarray(fit2["f0"])

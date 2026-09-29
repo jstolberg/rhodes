@@ -1,11 +1,22 @@
 # rhodes
 Physical modelling sound synthesis targeting the Rhodes piano
 
-## Tentative Plan
-- Model pickup from Pfeile (2017) (NN or Lookup table or both)
-- Reverse engineer modes (frequency, amplitude, decay) from sample pack, using pickup model, and compare with Gabrielli (2020)
-- Model excitation signal based on idealized clamped bar (using measurements? See below). Calculate for each key.
-- Rhodes real-time synthesis: Add modal synthesis with excitation signal, and feed through pickup model.
+## Pipeline
+One script per step, run in order from the repo root. Each step reads the results of the
+steps before it from `results/`. `pipeline.py` runs all steps, shows the results and renders
+the model after each step.
+
+| Step | Script | Estimates |
+| --- | --- | --- |
+| 1. Fundamental frequency and decay | `python step1_fundamental.py` | $f_0$, $\lambda_0$ |
+| 2. Pickup and free oscillation | `python step2_pickup.py real 1` | $p_d$, $p_o$, $\kappa$, $A_0$, $\sigma_0$ |
+| 3. Hammer parameters | `python step3_hammer.py` | $\tau_0$, $\beta$, $c_0$ |
+| 4. Inharmonic modes | `python step4_modes.py` | $f_n$, $\sigma_n$, $c_n$ |
+
+The model itself is in `model.py`; `python synth.py <step> [notes] [--dyn ...]` renders it
+after a step. `python results.py` computes the numbers and figures for the paper from
+`results/` (writes `figures/` and `results_numbers.md`). The samples go in `Samples/` as
+`{note}-{dyn}.wav`.
 
 ## Rhodes measurements
 [https://www.fenderrhodes.com/org/manual/ch6.html](https://www.fenderrhodes.com/org/manual/ch6.html)

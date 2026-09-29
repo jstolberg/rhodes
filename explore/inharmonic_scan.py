@@ -1,4 +1,4 @@
-"""Scan for inharmonic energy (step 5 of fitting.py): which non-harmonic frequency bands carry
+"""Scan for inharmonic energy (exploration for step 4): which non-harmonic frequency bands carry
 the most energy right after the hammer contact, per key.
 
 Short-time spectra with frames of a fixed number of periods of f_0: what an inharmonic line
@@ -13,7 +13,7 @@ level over time (decay rate, lifetime) and whether it is an intermodulation prod
 k f_0 +- r f_0 of a stronger peak (the pickup is nonlinear, so a mode at r f_0 comes with lines
 at every integer distance from it, and at the mirror 1 - r).
 
-    python inharmonic_scan.py [E0 E2 E4 E6 | --all] [--dyn f] [--np 16]
+    python -m explore.inharmonic_scan [E0 E2 E4 E6 | --all] [--dyn f] [--np 16]
 
 Hyperparameters
 | Name | Value | Meaning |
@@ -58,8 +58,8 @@ NOMINAL = np.array([0.48, 7.1, 20.4, 39.7, 62.9, 93.1])   # mode_measurement.py,
 
 def load_keys():
     """notes, f_0 (step 1), contact time tau_0 and beta (step 3) for all keys."""
-    f1 = np.load("fundamentals.npz", allow_pickle=True)
-    f3 = np.load("step3_fit.npz", allow_pickle=True)
+    f1 = np.load("results/step1_fundamentals.npz", allow_pickle=True)
+    f3 = np.load("results/step3_hammer.npz", allow_pickle=True)
     assert (f1["notes"] == f3["notes"]).all()
     return f1["notes"], np.nanmedian(f1["table"]["f"], axis=1), f3["tau0"], float(f3["beta"])
 
@@ -246,7 +246,7 @@ def plot_trends(res, dyn, path):
 
 
 if __name__ == "__main__":
-    args = sys.argv[1:]
+    args = [] if "ipykernel" in sys.argv[0] else sys.argv[1:]      # cell by cell: not our command line
     dyn  = args[args.index("--dyn") + 1] if "--dyn" in args else "f"
     N_P  = int(args[args.index("--np") + 1]) if "--np" in args else N_P
     notes, f0s, tau0, beta = load_keys()

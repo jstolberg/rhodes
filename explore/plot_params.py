@@ -1,7 +1,7 @@
-"""Overview plots of a step-2 fit (step2_fit.npz) into plots/: every parameter across the
+"""Overview plots of a step-2 fit (results/step2_pickup.npz) into plots/: every parameter across the
 keyboard, the same against f_0, and the per-cell residuals.  Rerun after any fit.
 
-    python plot_params.py [step2_fit.npz]
+    python -m explore.plot_params [results/step2_pickup.npz]
 """
 import os
 import sys
@@ -10,10 +10,10 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from step2_lib import (DISP_MAX, DYNS, J_FIT, PD_RANGE, PO_MAX, R_FIX, VELS, features, load_keys,
-                       predict, raw_a0, raw_pd, raw_po)
+from step2_pickup import (DISP_MAX, DYNS, J_FIT, PD_RANGE, PO_MAX, R_FIX, VELS, features, load_keys,
+                          predict, raw_a0, raw_pd, raw_po)
 
-FIT = sys.argv[1] if len(sys.argv) > 1 else "step2_fit.npz"
+FIT = sys.argv[1] if len(sys.argv) > 1 and "ipykernel" not in sys.argv[0] else "results/step2_pickup.npz"
 OUT = "plots"
 
 

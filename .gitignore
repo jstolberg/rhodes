@@ -9,3 +9,5 @@ cache/
 
 # Python
 __pycache__/
+# Generated
+plots/

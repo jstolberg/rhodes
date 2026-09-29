@@ -1,60 +1,33 @@
 # %% [markdown]
-# # Measuring the Fundamental Frequency $f_0$ and Its Decay Rate $\lambda_0$
-#
+# # Step 1: Fundamental frequency and decay
+#     python step1_fundamental.py      -> results/step1_fundamentals.npz
 # The theoretical frequency of a given musical note is known. However, real-world instruments are not perfectly tuned, meaning that the actual frequency of a recorded sample can differ slightly from its theoretical value. To determine the fundamental frequency and its decay rate from the recorded signal, the following procedure is applied.
-#
 # 1. **Compute the Fourier Transform**
-#
 # First, the Fourier Transform (FFT) is computed over the recorded sample to obtain its frequency spectrum.
-#
 # 2. **Identify the fundamental frequency**
-#
 # A small frequency window is selected around the theoretically expected fundamental frequency. Within this window, the frequency with the highest energy is identified as the measured fundamental frequency $f_0$.
-#
 # 3. **Demodulate the signal**
-#
 # To isolate the fundamental component, the signal is shifted to 0 Hz by multiplying it with a complex exponential at the measured frequency:
-#
 # $$ e(t) = \operatorname{lowpass}\left(x(t)e^{-2\pi i f_0t}\right) $$
-#
 # After this frequency shift, the fundamental component is centered around 0 Hz. Applying a low-pass filter suppresses the remaining harmonics and other frequency components.
-#
 # 4. **Determine the decay rate**
-#
 # The resulting signal $e(t)$ is complex-valued. Its magnitude represents the amplitude envelope of the fundamental component. Assuming an exponential decay:
-#
 # $$ |e(t)| = A e^{-\lambda_0 t} $$
-#
 # Taking the logarithm gives a linear relationship:
-#
 # $$ \log |e(t)| = \log A - \lambda_0 t $$
-#
 # Therefore, the magnitude of $e(t)$ is calculated for every sample, and a linear regression is performed on its logarithm. The negative slope of the fitted line corresponds to the decay rate $\lambda_0$.
-#
 # 5. **Determine the frequency offset**
-#
 # The phase of the complex signal can be analyzed in the same way. Any residual linear change in phase over time indicates that the actual frequency differs slightly from the frequency used for demodulation. This phase evolution can therefore be used to estimate the frequency offset and refine the measured fundamental frequency.
-#
 # More precisely, if $\phi(t)$ denotes the unwrapped phase, the slope of the phase is related to the frequency difference by:
-#
 # $$ \frac{d\phi(t)}{dt} = 2\pi(f_{\text{actual}}-f_0) $$
-#
 # ## Dataset
-#
 # The dataset consists of four individual recordings for each piano key, corresponding to four different playing velocities. Having multiple recordings per note provides additional measurements for estimating the fundamental frequency and decay rate. It also allows the consistency of the measurements to be evaluated across different playing dynamics.
-#
 # ## (Pre-)Processing of the Samples
-#
 # Each sample is approximately 8 seconds long. The recordings contain a fading tail beginning at approximately 7.3 seconds. Including this section in the decay estimation would introduce an artificial change in the measured decay rate. Therefore, the samples are truncated before this point.
-#
 # The initial attack of the sound is also excluded from the analysis. Since the goal is to measure the decay of the fundamental frequency, the transient attack phase is not representative of the steady-state decay and would distort the exponential fit.
-#
 # ## What Is Saved, and What Is Not
-#
 # The result is one row per recording: every note at every velocity, exactly as measured. Nothing is averaged across velocities, nothing is filled in, and nothing is fitted. Those are modelling decisions, and they belong to the model rather than to the measurement.
-#
 # The velocities are kept separate rather than combined into a single value per note. Averaging them would assume that the four recordings are repeated measurements of one quantity, and that assumption is not made here. Whether they can be collapsed, and how, is left to be decided from the measurements themselves.
-#
 # The lowest notes have particularly long decay times. Within the approximately 7.3-second measurement window their amplitude decreases too little to time the decay at all, and for the loudest recordings of those notes it barely decreases. Where the decay cannot be established the decay rate is left empty. Each row still carries the evidence behind it: how far the line was watched to fall, how straight it was while falling, and a flag recording whether that was sufficient. The frequency is reported either way, since a line too slow to time is still well located.
 # %%
 from __future__ import annotations
@@ -68,7 +41,7 @@ import scipy.signal as sg
 from scipy.ndimage import uniform_filter1d
 
 SAMPLES, DYNS = "Samples", ("p", "mp", "mf", "f")
-RESULTS = "fundamentals.npz"
+RESULTS = "results/step1_fundamentals.npz"
 
 TAIL_TRIM = 0.70   # s cut off the end, clearing the library's fade-out
 FALL_MAX = 40.0    # dB below the envelope peak the fit runs to.  A fixed depth
@@ -175,6 +148,7 @@ NOTES = sorted({p.rsplit("-", 1)[0] for p in os.listdir(SAMPLES)
 
 if __name__ == "__main__":
     t = measure_library(NOTES)
+    os.makedirs(os.path.dirname(RESULTS), exist_ok=True)
     np.savez_compressed(RESULTS, table=t, notes=np.array(NOTES),
                         dyns=np.array(DYNS))
     usable = t["ok"].any(axis=1)

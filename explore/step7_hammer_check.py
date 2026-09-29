@@ -42,7 +42,7 @@ import numpy as np
 import optax
 
 from model import calc_tau, hammer2free
-from step2_lib import DYNS, T_START, VELS
+from step2_pickup import DYNS, T_START, VELS
 
 N_BASS    = 12                  # lowest keys for the velocity estimate
 HIDDEN    = 16                  # MLP width (two hidden layers)
@@ -54,8 +54,8 @@ DB        = 20 / np.log(10)     # natural log -> dB
 
 # %%
 # ---------- data ----------
-fit2 = np.load("step2_fit.npz", allow_pickle=True)
-fit3 = np.load("step3_fit.npz", allow_pickle=True)
+fit2 = np.load("results/step2_pickup.npz", allow_pickle=True)
+fit3 = np.load("results/step3_hammer.npz", allow_pickle=True)
 fit6 = np.load("step6_fit.npz", allow_pickle=True)
 notes2 = list(fit2["notes"])
 beta   = float(fit3["beta"])

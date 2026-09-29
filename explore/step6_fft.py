@@ -58,8 +58,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from model import calc_tau, hammer2free, psi_lookup
-from step2_lib import (DYNS, FS_SYN, NOISE_MARGIN, NOISE_SYN, PRE_SYN, T_START, TABLE, VELS,
-                       fit, hann, load_wave, onset)
+from step2_pickup import (DYNS, FS_SYN, NOISE_MARGIN, NOISE_SYN, PRE_SYN, T_START, TABLE, VELS,
+                          fit, hann, load_wave, onset)
 
 TAG        = os.environ.get("STEP6_TAG", "real")     # "syn": set STEP6_TAG=syn
 N_PERIODS_M, K_M, T_MODES = 64, 8, 0.8
@@ -75,8 +75,8 @@ SHOW_KEY     = "A#3"    # key of the detail plot (falls back to the middle key)
 
 # %%
 # ---------- fixed parameters of steps 2 and 3, lines of step 5 ----------
-fit2   = np.load("step2_fit.npz", allow_pickle=True)
-fit3   = np.load("step3_fit.npz", allow_pickle=True)
+fit2   = np.load("results/step2_pickup.npz", allow_pickle=True)
+fit3   = np.load("results/step3_hammer.npz", allow_pickle=True)
 lines5 = np.load("step5_lines.npz", allow_pickle=True)
 kappa, beta = float(fit2["kappa"]), float(fit3["beta"])
 robust = lines5["robust"]                               # (73 keys, N ratios): line usable

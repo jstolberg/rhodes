@@ -1,5 +1,7 @@
 # %% [markdown]
-# # Fitting hammer parameters (step 3 of fitting.py)
+# # Step 3: Hammer parameters
+#
+#     python step3_hammer.py      results/step2_pickup.npz -> results/step3_hammer.npz
 #
 # Step 2 hands over, per key $k$ and dynamic, the amplitude $A_0$ of the free
 # fundamental at $t_0$ = onset + `T_START`, and its decay $\sigma_0$.  The hammer
@@ -19,16 +21,16 @@
 # * $\tau_0$ -- log-linear over the key index, $\beta$ global.  Only the treble
 #   ($g < 1$) carries information on them; the line lets it anchor the bass.  The
 #   start must keep the treble inside the main lobe of the pulse spectrum,
-#   $f_0 \tau(v_\min) < 2$, or the loss becomes multimodal.
+#   $f_0 \tau(v_{\min}) < 2$, or the loss becomes multimodal.
 #
 # Keys flagged in step 2 (detuned samples) are left out of the loss; their $c_0$
 # is interpolated from the neighbours.
 #
 # | Input | Content |
 # | --- | --- |
-# | `step2_fit.npz` | `A0` (73 x 4), `sigma`, `f0`, `flag` |
+# | `results/step2_pickup.npz` | `A0` (73 x 4), `sigma`, `f0`, `flag` |
 #
-# | Output (`step3_fit.npz`) | Content |
+# | Output (`results/step3_hammer.npz`) | Content |
 # | --- | --- |
 # | `tau0`, `log_tau0` | contact time at $v_f$ per key (s); the line's end points |
 # | `beta` | velocity exponent of the contact time |
@@ -63,7 +65,7 @@ DYNS       = ["p", "mp", "mf", "f"]
 
 # %%
 # ---------- data ----------
-fit2  = np.load("step2_fit.npz", allow_pickle=True)
+fit2  = np.load("results/step2_pickup.npz", allow_pickle=True)
 notes = fit2["notes"]
 M     = len(notes)
 f0    = jnp.asarray(fit2["f0"])
@@ -181,7 +183,7 @@ print("  fit:  ", report(theta, v))
 print("  rms log residual per dynamic:", np.round(np.sqrt((r[~flag] ** 2).mean(0)), 3))
 print("  excluded (flagged in step 2):", list(notes[flag]))
 
-np.savez("step3_fit.npz", notes=notes, f0=np.asarray(f0), tau0=np.asarray(tau0_of_key(theta)),
+np.savez("results/step3_hammer.npz", notes=notes, f0=np.asarray(f0), tau0=np.asarray(tau0_of_key(theta)),
          log_tau0=np.asarray(theta["log_tau0"]), beta=float(jnp.exp(theta["log_beta"])),
          vels=np.asarray(v), c0=c0, flag=flag)
 

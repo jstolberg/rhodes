@@ -12,7 +12,7 @@ its early and late halves (equal means exponential), rms fit residual, and the r
 fundamental's decay sigma_1 of step 1; per class and key range the medians of lambda,
 lambda / sigma_1 and Q = pi f / lambda.
 
-    python line_decay.py          (needs inharmonic_scan_all_np64-{f,p}.npy)
+    python -m explore.line_decay       (needs inharmonic_scan_all_np64-{f,p}.npy)
 
 Hyperparameters
 | Name | Value | Meaning |
@@ -31,7 +31,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.signal as sg
 
-import inharmonic_scan as scan
+from explore import inharmonic_scan as scan
 
 CLASSES = [("sub", 0.0, 1.0), ("7.x", 5.5, 7.6), ("20.x", 18.5, 22.5), ("39.x", 36.0, 43.0)]
 RANGES = [(0, 24, "E0-D#2"), (24, 48, "E2-D#4"), (48, 73, "E4-E6")]
@@ -45,7 +45,7 @@ OUT = "plots"
 
 def load_fundamentals():
     """notes, f_0 and the step-1 decay sigma_1 per key (median over the fitted dynamics)."""
-    f1 = np.load("fundamentals.npz", allow_pickle=True)
+    f1 = np.load("results/step1_fundamentals.npz", allow_pickle=True)
     lam = np.where(f1["table"]["ok"], f1["table"]["lam"], np.nan)
     sig1 = np.array([np.nanmedian(r) if np.isfinite(r).any() else np.nan for r in lam])
     return list(f1["notes"]), np.nanmedian(f1["table"]["f"], axis=1), sig1

@@ -1,4 +1,53 @@
-"""Step 2 of fitting.py (pickup and fundamental): shared definitions.
+# %% [markdown]
+# # Step 2: Pickup and free oscillation
+#
+#     python step2_pickup.py [real|syn] [stride]
+#
+# Runs the multi-start (initial values, cached in `cache/`) and then the fit.  With
+# `real` and stride 1 the result is written to `results/step2_pickup.npz` for step 3.
+#
+#
+# The model in this step is a single free mode, $x(t) = p_o + A_0 e^{-\sigma_0 t}
+# \sin 2\pi f_0 t$, seen through the pickup.  The pickup is a static
+# nonlinearity, so the output has energy only at $n f_0$.  Rather than an STFT
+# over all bins, both target and synthetic signals are projected onto the
+# fundamental and its first four harmonics in a sequence of Hann-windowed frames,
+# $$H[n, k] = \int w(t - t_k)\, \epsilon(t)\, e^{-2\pi i\, n f_0 t}\, \mathrm{d}t,
+#   \qquad n = 1 \ldots 5,$$
+# and the loss is the mean square of the log-magnitude difference, with a
+# per-frame noise floor $\eta$ and a mask,
+# $$L = \frac{1}{\sum m}\sum_{n,k} m[n,k]\big(\log(|H_t| + \eta) - \log(\kappa
+#   |H_s| + \eta)\big)^2 .$$
+# $\kappa$ is one global gain (the recording level and the pickup constant are
+# both arbitrary); it is not a free parameter but the closed-form level match
+# $\log\kappa = \overline{\log|H_t| - \log|H_s|}$ over the kept cells.  The
+# coil's RLC filter is ignored for now.
+#
+# The pickup surface is fixed from photos ($r \approx 4$ mm,
+# $a \approx 1.3$ mm, $m \approx 1$), so $\Psi(x, z)$ is tabulated **once**;
+# the per-key $(p_o, p_d)$ enter only through the lookup.  $A_0$ is the
+# amplitude at $t_0$ = onset + `T_START`, after the hammer has left; step 3
+# needs the amplitude at handover, which differs by $e^{\sigma_0 (t_0 - \tau)}$.
+# The decay of step 1 sets the frame span per key and the starting $\sigma_0$.
+# Definitions and hyperparameters: below.
+#
+# ## Three stages
+#
+# $p_o$, $p_d$, $\sigma_0$ are per key, $A_0$ per key and dynamic.  The
+# starting geometry comes from the multi-start below (cached).
+#
+# * **A** -- $p_o$, $p_d$, $\sigma_0$, $A_0(f)$ from the f samples alone.
+# * **B** -- $A_0$ of p, mp, mf per cell with everything else fixed (one
+#   parameter per cell, started from the best of a log-spaced scan).
+# * **C** -- all parameters, all cells, fine-tuned together.
+#
+# | Name | Value | Meaning |
+# | --- | --- | --- |
+# | `STEPS_A`, `STEPS_B`, `STEPS_C` | 300, 100, 300 | Adam steps of the three stages |
+# | `A0_SCAN` | 32 values, 0.01-9.5 mm | log-spaced $A_0$ scan per cell that starts stage B |
+
+# %%
+"""Step 2 (pickup and free oscillation): definitions.
 
 Model: one free mode x(t) = p_o + A_0 e^{-sigma_0 t} sin 2 pi f_0 t seen through the
 pickup, eps = -kappa dPsi(x, p_d)/dt, with the surface fixed from photos and Psi tabulated
@@ -10,7 +59,6 @@ p_o, p_d, sigma_0 are per key, A_0 per key and dynamic.  The decay of step 1
 (fundamentals.npz) sets the frame span per key and the starting sigma_0.  Keys in FLAGGED
 are fitted like the others and marked in the output, for exclusion downstream.
 
-Used by step2_init.py (initial-value finder) and step2_fft.py (the fit).
 
 Hyperparameters
 | Name | Value | Meaning |
@@ -38,6 +86,8 @@ Hyperparameters
 from __future__ import annotations
 
 import os
+import pickle
+import sys
 import time
 from functools import partial
 
@@ -54,7 +104,8 @@ from model import z_trapz, make_surface, drop_masked, psi_table, psi_lookup
 
 # ---------- hyperparameters ----------
 SAMPLES      = "Samples"
-FUNDAMENTALS = "fundamentals.npz"
+FUNDAMENTALS = "results/step1_fundamentals.npz"
+RESULTS      = "results/step2_pickup.npz"
 CACHE        = "cache"
 DYNS         = ["p", "mp", "mf", "f"]
 FIT_DYN      = "f"
@@ -398,3 +449,196 @@ def synth_waves(theta, kappa, keys, key):
             key, sub = jax.random.split(key)
             waves[(i, j)] = (np.asarray(one(A0[i, j], g["sig"][i], f0, g["p_o"][i], g["p_d"][i], sub)), FS_SYN)
     return waves
+
+
+# %% [markdown]
+# ## Initial values: multi-start with successive elimination
+#
+# Not the optimiser -- an initial-value finder for the geometry of every key.
+# The log-magnitude loss is rugged in $p_o$: wherever a harmonic of the model
+# passes through zero as a function of the operating point, that harmonic's
+# residual spikes, and these walls separate basins that gradient descent
+# cannot cross.  $p_o$, $p_d$ and $\sigma_0$ are per key, so one cell per key
+# (dynamic `FIT_DYN`) decides the basin.
+#
+# Every key starts from `PO_STARTS` x `A0_STARTS` starts ($p_d$ = `PD_INIT`,
+# $\sigma_0$ from step 1, held).  All starts of all keys are refined in
+# parallel with Adam on the gain-free per-key loss, evaluated on `K_INIT` of
+# the frames with `L_INIT` samples each (a coarse view is enough to rank
+# basins); after each round only the best `KEEP` of a key's starts survive.
+# The result -- the surviving candidates, their Adam state and scores -- is
+# cached; the best candidate of every key starts the fit (below).
+#
+#
+# | Name | Value | Meaning |
+# | --- | --- | --- |
+# | `PD_INIT` | 2 mm | $p_d$ of every start |
+# | `PO_STARTS`, `A0_STARTS` | 20 x 3 | starts in $p_o$ (0.2 mm apart, closer than any basin) and $A_0$ |
+# | `ROUND_STEPS`, `KEEP` | (20, 20, 40), 1/3 | Adam steps per round; fraction of a key's starts kept after each round but the last: 60 -> 20 -> 7 |
+# | `K_INIT`, `L_INIT` | 4, 768 | frames and samples per frame of the reduced evaluation |
+
+
+# %%
+PD_INIT      = 2.0e-3
+PO_STARTS    = np.linspace(0.15e-3, PO_MAX - 0.15e-3, 20)
+A0_STARTS    = np.array([0.1e-3, 0.5e-3, 2.5e-3])
+ROUND_STEPS  = (20, 20, 40)
+KEEP         = 1 / 3
+K_INIT, L_INIT = 4, 768
+
+
+def init_path(tag, stride=KEY_STRIDE):
+    return f"{CACHE}/init_{tag}_{stride}.pkl"
+
+
+def scorer(keys, Ht, eta, mask):
+    """Gain-free per-key loss of the FIT_DYN cell on the reduced evaluation, for a batch of
+    starts: q (S, Mk) arrays -> scores (S, Mk)."""
+    kidx = np.round(np.linspace(0, K_FRAMES - 1, K_INIT)).astype(int)
+    sl = np.s_[:, J_FIT:J_FIT + 1, :, kidx]
+    logHt, eta_r, mask_r = jnp.log(Ht + eta)[sl], eta[sl], mask[sl]
+    log_sig = jnp.log(jnp.asarray(keys["sig1"]))
+
+    def scores(q):
+        one = lambda po, pd, a0: loss_per_key(dict(po_raw=po, pd_raw=pd, log_sig=log_sig, A0_raw=a0[:, None]),
+                                              keys, logHt, eta_r, mask_r, kidx, L_INIT)
+        return jax.vmap(one)(q["po_raw"], q["pd_raw"], q["A0_raw"])
+    return scores
+
+
+def multi_start(keys, Ht, eta, mask):
+    """Returns the cache dict: candidates q (S, Mk), their Adam state, scores (S, Mk), and
+    the winner per key (index 0 after the last round's sort)."""
+    Mk = len(keys["f0s"])
+    scores = scorer(keys, Ht, eta, mask)
+    po, a0 = np.meshgrid(PO_STARTS, A0_STARTS, indexing="ij")
+    S = po.size
+    q = dict(po_raw=raw_po(np.repeat(po.reshape(S, 1), Mk, 1)),
+             pd_raw=raw_pd(np.full((S, Mk), PD_INIT)),
+             A0_raw=raw_a0(np.repeat(a0.reshape(S, 1), Mk, 1)))
+    state, kk = None, np.arange(Mk)
+    for r, steps in enumerate(ROUND_STEPS):
+        q, _, state = fit(q, lambda q: scores(q).sum(), steps, label=f"round {r + 1}, {S} starts x {Mk} keys: ", state=state)
+        L = np.asarray(jax.jit(scores)(q))
+        S = S if r == len(ROUND_STEPS) - 1 else max(1, int(np.ceil(S * KEEP)))
+        top = np.argsort(L, axis=0)[:S]                       # (S, Mk): each key keeps its own best starts
+        q = {k: v[top, kk] for k, v in q.items()}
+        state = jax.tree_util.tree_map(lambda v: v[top, kk] if getattr(v, "ndim", 0) == 2 else v, state)
+        L = L[top, kk]
+        print("  best per key:", np.round(L[0], 4), " runner-up:", np.round(L[1], 4))
+    return dict(q={k: np.asarray(v) for k, v in q.items()}, state=jax.device_get(state), scores=L,
+                notes=keys["notes"], rounds=ROUND_STEPS)
+
+
+def winner(cache):
+    """Starting theta of the fit: the best candidate of every key (A0_raw (Mk, 1))."""
+    q = cache["q"]
+    return dict(po_raw=jnp.asarray(q["po_raw"][0]), pd_raw=jnp.asarray(q["pd_raw"][0]),
+                A0_raw=jnp.asarray(q["A0_raw"][0])[:, None])
+
+
+# %% [markdown]
+# ## The fit: stages A, B, C
+
+# %%
+STEPS_A, STEPS_B, STEPS_C = 300, 100, 300
+A0_SCAN = np.geomspace(0.01e-3, 0.95 * DISP_MAX, 32)     # stage B start: per-cell scan of A_0
+
+
+def stage_A(theta0, keys, Ht, eta, mask):
+    """p_o, p_d, sigma_0, A_0(f) from the f cells."""
+    sl = np.s_[:, J_FIT:J_FIT + 1]
+    logHt, eta_f, mask_f = jnp.log(Ht + eta)[sl], eta[sl], mask[sl]
+    theta, hist, _ = fit(theta0, lambda th: loss(th, keys, logHt, eta_f, mask_f)[0], STEPS_A, label="A: ")
+    return theta, loss(theta, keys, logHt, eta_f, mask_f)[1], hist
+
+
+def stage_B(theta_A, log_kappa, keys, Ht, eta, mask):
+    """A_0 of the other dynamics, one parameter per cell, geometry / sigma / kappa fixed.
+    The loss of a cell is rugged in A_0 (harmonics have nulls as a function of amplitude),
+    so each cell starts from the best of a log-spaced scan A0_SCAN, then Adam."""
+    others = [j for j in range(N_DYN) if j != J_FIT]
+    logHt, eta_o, mask_o = jnp.log(Ht + eta)[:, others], eta[:, others], mask[:, others]
+    fixed = {k: v for k, v in theta_A.items() if k != "A0_raw"}
+    Mk = len(keys["f0s"])
+
+    def cell_loss(A0_raw):                                    # (Mk, n_others) per-cell losses
+        pred = jnp.logaddexp(log_kappa + predict(dict(fixed, A0_raw=A0_raw), keys), jnp.log(eta_o))
+        return masked_mean((logHt - pred) ** 2, mask_o, axis=(2, 3))
+
+    # one scan value at a time (lax.map, not vmap): all 32 at once need ~11 GB
+    scan = jax.jit(lambda s: jax.lax.map(lambda a0: cell_loss(jnp.full((Mk, len(others)), raw_a0(a0))), s))(A0_SCAN)
+    A0 = A0_SCAN[np.asarray(scan).argmin(0)]                  # (Mk, n_others)
+    loss_B = lambda q: loss(dict(fixed, **q), keys, logHt, eta_o, mask_o, log_kappa)[0]
+    q, hist, _ = fit(dict(A0_raw=raw_a0(A0)), loss_B, STEPS_B, label="B: ")
+    A0_raw = jnp.concatenate([q["A0_raw"][:, :J_FIT], theta_A["A0_raw"], q["A0_raw"][:, J_FIT:]], axis=1)
+    return dict(fixed, A0_raw=A0_raw), hist
+
+
+def stage_C(theta, keys, Ht, eta, mask):
+    """All parameters on all cells."""
+    logHt = jnp.log(Ht + eta)
+    theta, hist, _ = fit(theta, lambda th: loss(th, keys, logHt, eta, mask)[0], STEPS_C, label="C: ")
+    return theta, loss(theta, keys, logHt, eta, mask)[1], hist
+
+
+def fit_all(theta0, keys, Ht, eta, mask):
+    t0 = time.time()
+    theta_A, lk_A, hA = stage_A(theta0, keys, Ht, eta, mask)
+    theta_B, hB       = stage_B(theta_A, lk_A, keys, Ht, eta, mask)
+    theta_C, lk_C, hC = stage_C(theta_B, keys, Ht, eta, mask)
+    print(f"total {time.time() - t0:.0f} s")
+    return theta_C, lk_C, (hA, hB, hC)
+
+
+# %%
+# Initial values: multi-start on the target features, cached for the fit.
+# From the terminal: python step2_pickup.py [real|syn] [stride].  Run cell by cell, the
+# command line is the kernel's, not ours: set TAG and STRIDE here instead.
+if __name__ == "__main__":
+    args   = [] if "ipykernel" in sys.argv[0] else sys.argv[1:]
+    TAG    = args[0] if len(args) > 0 else "syn"
+    STRIDE = int(args[1]) if len(args) > 1 else KEY_STRIDE
+    keys = load_keys(STRIDE)
+    Ht, eta, mask = features(TAG, keys, STRIDE)
+    report_mask(mask)
+    t0 = time.time()
+    cache = multi_start(keys, Ht, eta, mask)
+    print(f"multi-start in {time.time() - t0:.0f} s")
+    os.makedirs(CACHE, exist_ok=True)
+    with open(init_path(TAG, STRIDE), "wb") as f:
+        pickle.dump(cache, f)
+    print(f"-> {init_path(TAG, STRIDE)}")
+    g, A0 = unpack(dict(winner(cache), log_sig=jnp.log(jnp.asarray(keys["sig1"]))))
+    print("winner p_o (mm):", np.round(np.asarray(g["p_o"]) * 1e3, 2), " p_d (mm):", np.round(np.asarray(g["p_d"]) * 1e3, 2),
+          " A_0(f) (mm):", np.round(np.asarray(A0[:, 0]) * 1e3, 2))
+
+# %%
+# The fit, from the best start of every key.
+if __name__ == "__main__":
+    with open(init_path(TAG, STRIDE), "rb") as f:
+        cache = pickle.load(f)
+    assert (cache["notes"] == keys["notes"]).all(), "init cache is for other keys"
+    theta0 = dict(winner(cache), log_sig=jnp.log(jnp.asarray(keys["sig1"])))
+
+    true = theta_ref(keys) if TAG == "syn" else None
+    if true is not None:
+        print(f"loss at truth: {float(loss(true, keys, jnp.log(Ht + eta), eta, mask)[0]):.4f}")
+
+    theta, lk, hists = fit_all(theta0, keys, Ht, eta, mask)
+    print("fit:"); g, A0 = report(theta, lk, true)
+    residuals(theta, lk, keys, Ht, eta, mask)
+
+# %%
+if __name__ == "__main__":
+    plot_params(hists, theta, keys, true)
+    plot_fit(theta, lk, keys, Ht, eta, mask, len(keys["f0s"]) // 2, J_FIT)
+
+# %%
+# Hand-over to step 3: A_0 (Mk, N_DYN) and sigma_0 (Mk,) with the geometry (full keyboard only).
+if __name__ == "__main__" and TAG == "real" and STRIDE == 1:
+    os.makedirs(os.path.dirname(RESULTS), exist_ok=True)
+    np.savez(RESULTS, notes=keys["notes"], f0=keys["f0s"], A0=np.asarray(A0),
+             sigma=np.asarray(g["sig"]), p_d=np.asarray(g["p_d"]), p_o=np.asarray(g["p_o"]),
+             kappa=float(jnp.exp(lk)), tfit=keys["tfit"], ok=mask[:, :, 0].sum(-1) >= 3, flag=keys["flag"])
+    print(f"-> {RESULTS}")
