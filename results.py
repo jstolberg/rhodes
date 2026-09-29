@@ -226,6 +226,12 @@ for t in tab4:
                f"fundamental; A_n/A_0 = {t['adb']:+.1f} dB, spread over the dynamics {t['spread']:.1f} dB, "
                f"change from p to f {t['p2f']:+.1f} dB; in the model on {t['keys']} keys.")
 say(S, "No mode above m4 was found with confidence, so m5 and m6 are not part of the model.")
+# which keys carry which mode: f_n = mu_n f_0 must stay below F_MAX (Gabrielli found none above)
+for n, m in enumerate(names):
+    k = np.flatnonzero(ok6[:, n])
+    if k.size:
+        above = f" (from {notes[k[-1] + 1]} up, {mu[n]} f0 lies above {s5.F_MAX / 1e3:.0f} kHz)" if k[-1] + 1 < M else ""
+        say(S, f"{m} is in the model from {notes[k[0]]} to {notes[k[-1]]}, on {k.size} of {M} keys{above}.")
 A0_growth = DB * np.log(vels[-1] / vels[0])
 say(S, f"From p to f the fundamental grows by about {A0_growth:.1f} dB in the bass (A_0 ~ v).")
 cells = int(ok6.sum()) * len(DYNS)
@@ -357,8 +363,29 @@ for n, m in enumerate(names):
     k = ok6[:, n]
     ax.loglog(f0[k], fit6["sig"][k, n], "--", color=f"C{n}", lw=0.8)
 ax.set_xlabel("$f_0$ (Hz)"); ax.set_ylabel(r"decay rate $\sigma$ (1/s)")
-ax.legend(ncol=2, loc="lower right", title=r"dots: measured, dashed: model $\sigma_n$", title_fontsize=7)
+ax.legend(ncol=5, loc="upper center", bbox_to_anchor=(0.5, -0.22), frameon=False, columnspacing=0.8,
+          handlelength=1.5, title=r"dots: measured, dashed: model $\sigma_n$", title_fontsize=7)
 plt.savefig("figures/fig_decay_rates.pdf"); plt.show()
+
+# Figure A2: which mode on which key, f_n = mu_n f_0 against the 10 kHz limit
+fig, ax = plt.subplots(figsize=(W1, 2.4))
+kk = np.arange(M)
+for n, m in enumerate(names):
+    fn = mu[n] * f0
+    if ok6[:, n].any():
+        ax.semilogy(kk[ok6[:, n]], fn[ok6[:, n]], "-", color=f"C{n}", label=m)
+        ax.semilogy(kk[~ok6[:, n]], fn[~ok6[:, n]], ":", color=f"C{n}", lw=0.8)
+        c_ = clear[:, n]
+        ax.semilogy(kk[c_], fn[c_], "o", ms=3, color=f"C{n}")
+    else:
+        ax.semilogy(kk, fn, ":", color="0.6", lw=0.8)
+ax.axhline(s5.F_MAX, color="k", lw=0.8)
+ax.set_xticks(kk[::12]); ax.set_xticklabels(notes[::12])
+ax.set_xlabel("key"); ax.set_ylabel("$f_n$ (Hz)")
+ax.set_ylim(top=3 * s5.F_MAX)
+ax.legend(ncol=3, loc="lower right", title="solid: in the model, dots: clear, dotted: left out",
+          title_fontsize=7)
+plt.savefig("figures/fig_modes_keys.pdf"); plt.show()
 
 # Figure B: example key, step 2, harmonics measured and modelled over time
 EX = "A#3" if "A#3" in notes else notes[M // 2]
