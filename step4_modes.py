@@ -155,9 +155,12 @@ for mode in MODES:
 # for the decays in part A.  (No trend over the keyboard: the scatter between neighbouring
 # keys hides any.)
 #
-# - **Frequency**: $f_n = \rho_n f_0$, $\rho_n$ the median of part A's measured $f_n / f_0$,
-#   $f_0$ from step 2.  Gabrielli's ratios (`MODES`) only set where part A searches.  Modes
-#   above `F_MAX` = 10 kHz are left out (Gabrielli found none).
+# - **Frequency**: $f_n = \mu_n f_0$, $\mu_n$ Gabrielli's mean ratio (`MODES`), $f_0$ from
+#   step 2.  Not part A's measured ratios: they rest on few keys (m4: 3), and part A searches
+#   only within $\mu_n \pm 3 \sigma_n$, so a ratio near the edge of that window (m4) is not
+#   certainly the mode.  Gabrielli's ratios are measured on the tine itself (laser vibrometer,
+#   no pickup) over more keys.  The measured median is printed for comparison.  Modes above
+#   `F_MAX` = 10 kHz are left out (Gabrielli found none).
 # - **Decay**: $\sigma_n = r_n \sigma_0$, $r_n$ the median of $\sigma_n / \sigma_0$ with part A's
 #   $\sigma_n$ and $\sigma_0$ of step 2, the one the model uses.  (Part A prints the ratio to
 #   $\sigma_0$ of step 1.)  Modes without a clear key have no $r_n$ and are left out.
@@ -208,13 +211,14 @@ def median_clear(value):
                      if any(x["mode"] == m for x in rows) else np.nan for m in names])
 
 
-rho   = median_clear(lambda x: x["ratio_f"])                            # f_n / f_0
+mu    = np.array([MODES[m][0] for m in names])                         # f_n / f_0 (Gabrielli)
+rho   = median_clear(lambda x: x["ratio_f"])                            # measured, for comparison
 r     = median_clear(lambda x: x["sig_n"] / sig0[notes.index(x["note"])])  # sigma_n / sigma_0
-f_n   = rho[None, :] * f0[:, None]                                      # (keys, N)
+f_n   = mu[None, :] * f0[:, None]                                       # (keys, N)
 sig_n = r[None, :] * sig0[:, None]
 for n, m in enumerate(names):
     if np.isfinite(r[n]):
-        print(f"{m}: f_n/f_0 = {rho[n]:.3f} (Gabrielli {MODES[m][0]}), sigma_n/sigma_0 = {r[n]:.1f}")
+        print(f"{m}: f_n/f_0 = {mu[n]} (measured {rho[n]:.3f}), sigma_n/sigma_0 = {r[n]:.1f}")
 
 
 # %%
@@ -305,7 +309,7 @@ c, short = (np.array(x) for x in zip(*[c_of(i, j) for i in range(len(notes)) for
 c, short = c.reshape(len(notes), len(DYNS), -1), short.reshape(len(notes), len(DYNS), -1)   # (keys, dyn, N)
 print(f"A_n below a_n A_0 (pulse null): {(short < 1).sum()} of {ok.sum() * len(DYNS)} key x dynamic x mode, "
       f"median {DB * np.log(np.median(short[short < 1])):+.1f} dB")
-np.savez(RESULTS, notes=np.array(notes), dyns=np.array(DYNS), modes=names, ratios=rho, vels=vels,
+np.savez(RESULTS, notes=np.array(notes), dyns=np.array(DYNS), modes=names, ratios=mu, ratios_meas=rho, vels=vels,
          f_modes=f_n, sig=np.where(ok, sig_n, np.nan), ok=ok, c=c, short=short,
          a=a, a_key=a_key, a_dyn=a_dyn, sig_ratio=r)
 print(f"-> {RESULTS}")
