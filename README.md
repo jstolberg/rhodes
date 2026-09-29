@@ -1,25 +1,42 @@
 # rhodes
-Physical modelling sound synthesis targeting the Rhodes piano
+A physical model of the Rhodes electric piano, with its parameters estimated from
+recordings. The model has three parts: the tine as a sum of decaying modes, the hammer as
+a force pulse, and the magnetic pickup. The parameters are estimated in four steps, each
+of which holds the results of the steps before it fixed.
 
-## Pipeline
-One script per step, run in order from the repo root. Each step reads the results of the
-steps before it from `results/`. `pipeline.py` runs all steps, shows the results and renders
-the model after each step.
+## Getting started
+```
+uv sync
+uv run python pipeline.py
+```
+`pipeline.py` goes through all four steps: it shows each step's results and plays the model
+next to the recording. It uses the saved results in `results/` and the six recordings in
+`examples/`, so it runs without the sample pack. Set `RERUN` at its top to run a step
+again.
+
+To rerun the steps you need the recordings (Matt's Fender Rhodes on
+[Pianobook](https://www.pianobook.co.uk/packs/matts-fender-rhodes/)) in `Samples/` as
+`{note}-{dyn}.wav`, with dynamics `p`, `mp`, `mf`, `f`. The note names are the sample
+library's, one octave below the usual ones: `E0` is the lowest key (41.2 Hz).
+
+## The steps
+Run from the repo root, in order. Each step writes its result to `results/`. The steps,
+`model.py`, `pipeline.py` and `results.py` are split into `# %%` cells, so they can also
+be run cell by cell in an interactive window (VS Code, Jupyter).
 
 | Step | Script | Estimates |
 | --- | --- | --- |
 | 1. Fundamental frequency and decay | `python step1_fundamental.py` | $f_0$, $\lambda_0$ |
 | 2. Pickup and free oscillation | `python step2_pickup.py real 1` | $p_d$, $p_o$, $\kappa$, $A_0$, $\sigma_0$ |
-| 3. Hammer parameters | `python step3_hammer.py` | $\tau_0$, $\beta$, $c_0$ |
-| 4. Inharmonic modes | `python step4_modes.py` | $f_n$, $\sigma_n$, $c_n$ |
+| 3. Hammer | `python step3_hammer.py` | $\tau_0$, $\beta$, $c_0$, velocities |
+| 4. Inharmonic modes | `python step4_modes.py` | $f_n$, $\sigma_n$, $A_n/A_0$ |
 
-The model itself is in `model.py`; `python synth.py <step> [notes] [--dyn ...]` renders it
-after a step. `python results.py` computes the numbers and figures for the paper from
-`results/` (writes `figures/` and `results_numbers.md`). The samples go in `Samples/` as
-`{note}-{dyn}.wav`.
 
-## Rhodes measurements
-[https://www.fenderrhodes.com/org/manual/ch6.html](https://www.fenderrhodes.com/org/manual/ch6.html)
+## Other files
+- `model.py`: the model itself (tine, hammer, pickup)
+- `synth.py`: renders a note after any step, e.g. `python synth.py 4 A#3 --dyn p f`
+- `results.py`: the numbers and figures for the paper (writes `figures/`, `results_numbers.md`)
+- `explore/`: analyses that are not part of the pipeline
 
 ## Relevant Literature
 - [Real-time Physical Model of A Wurlitzer and Rhodes Electric Piano](https://dafx17.eca.ed.ac.uk/papers/DAFx17_paper_79.pdf)
