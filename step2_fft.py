@@ -37,12 +37,12 @@
 #
 # | Name | Value | Meaning |
 # | --- | --- | --- |
-# | `TAG` | real / syn | which target features and init |
+# | `TAG`, `STRIDE` | argv: real / syn; `KEY_STRIDE` | which target features and init; every k-th key (`python step2_fft.py [real|syn] [stride]`) |
 # | `STEPS_A`, `STEPS_B`, `STEPS_C` | 300, 100, 300 | Adam steps of the three stages |
-# | `A0_SCAN` | 32 values, 0.01-5.7 mm | log-spaced $A_0$ scan per cell that starts stage B |
-
+# | `A0_SCAN` | 32 values, 0.01-9.5 mm | log-spaced $A_0$ scan per cell that starts stage B |
 # %%
 import pickle
+import sys
 import time
 
 import jax
@@ -52,7 +52,7 @@ import numpy as np
 from step2_lib import *
 from step2_init import init_path, winner
 
-TAG = "syn"
+TAG, STRIDE = (sys.argv[1] if len(sys.argv) > 1 else "syn"), (int(sys.argv[2]) if len(sys.argv) > 2 else KEY_STRIDE)
 STEPS_A, STEPS_B, STEPS_C = 300, 100, 300
 A0_SCAN = np.geomspace(0.01e-3, 0.95 * DISP_MAX, 32)     # stage B start: per-cell scan of A_0
 
@@ -78,7 +78,8 @@ def stage_B(theta_A, log_kappa, keys, Ht, eta, mask):
         pred = jnp.logaddexp(log_kappa + predict(dict(fixed, A0_raw=A0_raw), keys), jnp.log(eta_o))
         return masked_mean((logHt - pred) ** 2, mask_o, axis=(2, 3))
 
-    scan = jax.jit(jax.vmap(lambda a0: cell_loss(jnp.full((Mk, len(others)), raw_a0(a0)))))(A0_SCAN)
+    # one scan value at a time (lax.map, not vmap): all 32 at once need ~11 GB
+    scan = jax.jit(lambda s: jax.lax.map(lambda a0: cell_loss(jnp.full((Mk, len(others)), raw_a0(a0))), s))(A0_SCAN)
     A0 = A0_SCAN[np.asarray(scan).argmin(0)]                  # (Mk, n_others)
     loss_B = lambda q: loss(dict(fixed, **q), keys, logHt, eta_o, mask_o, log_kappa)[0]
     q, hist, _ = fit(dict(A0_raw=raw_a0(A0)), loss_B, STEPS_B, label="B: ")
@@ -103,10 +104,10 @@ def fit_all(theta0, keys, Ht, eta, mask):
 
 
 # %%
-keys = load_keys()
-Ht, eta, mask = features(TAG, keys)
+keys = load_keys(STRIDE)
+Ht, eta, mask = features(TAG, keys, STRIDE)
 report_mask(mask)
-with open(init_path(TAG), "rb") as f:
+with open(init_path(TAG, STRIDE), "rb") as f:
     cache = pickle.load(f)
 assert (cache["notes"] == keys["notes"]).all(), "init cache is for other keys"
 theta0 = dict(winner(cache), log_sig=jnp.log(jnp.asarray(keys["sig1"])))
@@ -124,8 +125,8 @@ plot_params(hists, theta, keys, true)
 plot_fit(theta, lk, keys, Ht, eta, mask, len(keys["f0s"]) // 2, J_FIT)
 
 # %%
-# Hand-over to step 3: A_0 (Mk, N_DYN) and sigma_0 (Mk,) with the geometry.
-if TAG == "real":
+# Hand-over to step 3: A_0 (Mk, N_DYN) and sigma_0 (Mk,) with the geometry (full keyboard only).
+if TAG == "real" and STRIDE == 1:
     np.savez("step2_fit.npz", notes=keys["notes"], f0=keys["f0s"], A0=np.asarray(A0),
              sigma=np.asarray(g["sig"]), p_d=np.asarray(g["p_d"]), p_o=np.asarray(g["p_o"]),
-             kappa=float(jnp.exp(lk)), tfit=keys["tfit"], ok=mask[:, :, 0].sum(-1) >= 3)
+             kappa=float(jnp.exp(lk)), tfit=keys["tfit"], ok=mask[:, :, 0].sum(-1) >= 3, flag=keys["flag"])
