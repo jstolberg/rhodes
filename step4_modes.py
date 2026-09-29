@@ -156,10 +156,7 @@ for mode in MODES:
 # keys hides any.)
 #
 # - **Frequency**: $f_n = \mu_n f_0$, $\mu_n$ Gabrielli's mean ratio (`MODES`), $f_0$ from
-#   step 2.  Not part A's measured ratios: they rest on few keys (m4: 3), and part A searches
-#   only within $\mu_n \pm 3 \sigma_n$, so a ratio near the edge of that window (m4) is not
-#   certainly the mode.  Gabrielli's ratios are measured on the tine itself (laser vibrometer,
-#   no pickup) over more keys.  The measured median is printed for comparison.  Modes above
+#   step 2. The measured median is printed for comparison.  Modes above
 #   `F_MAX` = 10 kHz are left out (Gabrielli found none).
 # - **Decay**: $\sigma_n = r_n \sigma_0$, $r_n$ the median of $\sigma_n / \sigma_0$ with part A's
 #   $\sigma_n$ and $\sigma_0$ of step 2, the one the model uses.  (Part A prints the ratio to
