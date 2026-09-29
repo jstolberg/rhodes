@@ -9,10 +9,9 @@
 # | 1 fundamental | `step1_fundamental.py` | `results/step1_fundamentals.npz` |
 # | 2 pickup and free oscillation | `step2_pickup.py` | `results/step2_pickup.npz` |
 # | 3 hammer, incl. $c_0$ | `step3_hammer.py` | `results/step3_hammer.npz` |
-# | 4 inharmonic modes | `step4_modes.py` (A: decays, B: excitation) | `results/step4_modes.npz` |
+# | 4 inharmonic modes | `step4_modes.py` (A: clear modes, B: modes on every key) | `results/step4_modes.npz` |
 #
-# Also needed: `cache/features_real_1.npz` (step 2 targets), `cache/step4_synthetic_check.npz`
-# (`step4_synthetic_check.py`) and the recordings in `Samples/`.
+# Also needed: `cache/features_real_1.npz` (step 2 targets) and the recordings in `Samples/`.
 #
 # Output: figures as PDF in `figures/`, all sentences and the mode table in `results_numbers.md`.
 # Run time about 10 minutes (step 4 runs on import, the full model is rendered for every
@@ -27,7 +26,7 @@ import numpy as np
 from scipy.signal.windows import blackmanharris
 
 from model import calc_tau, epsilon, hammer2free
-from step2_pickup import (DYNS, NOISE_MARGIN, PD_RANGE, T_START, TABLE, VELS, frame_times, hann,
+from step2_pickup import (DYNS, NOISE_MARGIN, PD_RANGE, T_START, TABLE, frame_times, hann,
                           load_wave, onset, project_synth, project_target)
 
 plt.rcParams.update({"font.size": 8, "axes.titlesize": 8, "axes.labelsize": 8, "legend.fontsize": 7,
@@ -49,8 +48,9 @@ M = len(notes)
 for d in (fund, fit3, fit6):                         # same keys in the same order everywhere
     assert [str(n) for n in d["notes"]] == notes
 assert list(fund["dyns"]) == list(DYNS) == list(fit6["dyns"])
-assert {"c_dyn", "measured"} <= set(fit6.files), "run step4_modes.py first"
-print("velocities VELS (step2_pickup.py, used by step3_hammer.py):", dict(zip(DYNS, VELS)))
+assert {"a", "short"} <= set(fit6.files), "run step4_modes.py first"
+vels = fit3["vels"]
+print("velocities (step3_hammer.py, from the bass):", dict(zip(DYNS, np.round(vels, 3))))
 
 f0 = fit2["f0"]
 kappa, beta = float(fit2["kappa"]), float(fit3["beta"])
@@ -154,54 +154,65 @@ say(S, f"The fitted exponent is beta = {beta:.3f}, equivalent to a contact expon
 say(S, f"The contact time at full velocity falls from {1e3 * fit3['tau0'][0]:.2f} ms ({notes[0]}) "
        f"to {1e3 * fit3['tau0'][-1]:.2f} ms ({notes[-1]}).")
 say(S, f"On the {N_BASS} lowest keys, A_0 relative to f is {v_bass[0]:.2f}, {v_bass[1]:.2f} and {v_bass[2]:.2f} "
-       f"for p, mp and mf, against the assumed velocities {VELS[0]}, {VELS[1]} and {VELS[2]}.")
+       f"for p, mp and mf (mean); their median, {vels[0]:.3f}, {vels[1]:.3f} and {vels[2]:.3f}, is used as "
+       f"the velocities.")
 
 # %% [markdown]
 # ## Step 4: inharmonic modes
 #
 # `step4_modes.py` runs on import (about 1 minute; it writes `results/step4_modes.npz` again,
-# with the same values).
+# with the same values).  Part A: the clear modes and their decays.  Part B: one number per
+# mode, the median over the clear keys, on every key: $f_n = \mu_n f_0$ (Gabrielli),
+# $\sigma_n = r_n \sigma_0$ ($\sigma_0$ of step 2) and $A_n = a_n A_0$ for every dynamic.
 
 # %%
 import step4_modes as s5                # noqa: E402  (runs step 4 once)
 
-names = list(s5.MODES)
-mu = np.array([s5.MODES[m][0] for m in names])
-ok6, c6, c_dyn, measured = fit6["ok"], fit6["c"], fit6["c_dyn"], fit6["measured"]
+names = [str(m) for m in fit6["modes"]]
+assert names == list(s5.MODES)
+mu, mu_meas, r_sig = fit6["ratios"], fit6["ratios_meas"], fit6["sig_ratio"]    # per mode
+a6, a_key, a_dyn = fit6["a"], fit6["a_key"], fit6["a_dyn"]                   # A_n / A_0
+ok6, c6, short = fit6["ok"], fit6["c"], fit6["short"]
 rows = s5.rows
 clear = np.zeros(ok6.shape, bool)
 for x in rows:
     clear[notes.index(x["note"]), names.index(x["mode"])] = True
 
-# spread over the dynamics: per key std of log(c_dyn / c0) over the dynamics with c_dyn > 0
+# per clear key: spread of A_n / A_0 over the dynamics (dB), and its change from p to f (dB) from
+# the slope of log(A_n / A_0) against log v, as in step4_modes.py
+with np.errstate(all="ignore"):
+    log_a = np.log(a_dyn)
 spread = np.full(ok6.shape, np.nan)
-for i in range(M):
-    for n in range(len(names)):
-        u = c_dyn[i, :, n] > 0
-        if u.sum() >= 2:
-            spread[i, n] = DB * np.std(np.log(c_dyn[i, u, n] / c0[i]))
+p2f = np.full(ok6.shape, np.nan)
+for i, n in zip(*np.nonzero(clear)):
+    u = np.isfinite(log_a[i, :, n])
+    if u.sum() >= 2:
+        spread[i, n] = DB * np.std(log_a[i, u, n])
+    if u.sum() >= 3:
+        p2f[i, n] = DB * np.polyfit(np.log(vels[u]), log_a[i, u, n], 1)[0] * np.log(vels[-1] / vels[0])
 
 tab4 = []
 for n, m in enumerate(names):
-    r = np.array([x["ratio"] for x in rows if x["mode"] == m])
-    k = clear[:, n] & measured
-    cc = c6[ok6[:, n], 0, n] / c0[ok6[:, n]] if ok6[:, n].any() else np.array([np.nan])
-    tab4.append(dict(mode=m, mu=mu[n], clear=int(clear[:, n].sum()), meas=int(k.sum()),
-                     low=int((clear[:, n] & ~measured).sum()),
-                     ratio=np.median(r) if r.size else np.nan,
-                     cdb=DB * np.log(cc[0]) if ok6[:, n].any() else np.nan,
-                     spread=np.nanmedian(spread[k, n]) if np.isfinite(spread[k, n]).any() else np.nan))
+    k = clear[:, n]
+    tab4.append(dict(mode=m, mu=mu[n], meas=mu_meas[n], clear=int(k.sum()), ratio=r_sig[n],
+                     adb=DB * np.log(a6[n]) if np.isfinite(a6[n]) else np.nan,
+                     spread=np.nanmedian(spread[k, n]) if np.isfinite(spread[k, n]).any() else np.nan,
+                     p2f=np.nanmedian(p2f[k, n]) if np.isfinite(p2f[k, n]).any() else np.nan,
+                     keys=int(ok6[:, n].sum())))
 
 fmt = lambda v, f: "--" if not np.isfinite(v) else format(v, f)
-print(f"{'mode':<5}{'mu_n':>6}{'clear':>7}{'measured':>10}{'sigma_n/sigma_0':>17}{'c_n/c_0 (dB)':>14}{'spread (dB)':>13}")
+print(f"{'mode':<5}{'mu_n':>6}{'measured':>10}{'clear':>7}{'sigma_n/sigma_0':>17}{'A_n/A_0 (dB)':>14}"
+      f"{'spread (dB)':>13}{'p->f (dB)':>11}{'keys':>6}")
 for t in tab4:
-    print(f"{t['mode']:<5}{t['mu']:>6}{t['clear']:>7}{t['meas']:>10}{fmt(t['ratio'], '.1f'):>17}"
-          f"{fmt(t['cdb'], '+.1f'):>14}{fmt(t['spread'], '.1f'):>13}")
-latex = ["\\begin{tabular}{lrrrrrr}", "\\toprule",
-         "Mode & $\\mu_n$ & clear & measured & $\\sigma_n/\\sigma_0$ & $c_n/c_0$ (dB) & spread (dB) \\\\",
+    print(f"{t['mode']:<5}{t['mu']:>6}{fmt(t['meas'], '.2f'):>10}{t['clear']:>7}{fmt(t['ratio'], '.1f'):>17}"
+          f"{fmt(t['adb'], '+.1f'):>14}{fmt(t['spread'], '.1f'):>13}{fmt(t['p2f'], '+.1f'):>11}{t['keys']:>6}")
+latex = ["\\begin{tabular}{lrrrrrrrr}", "\\toprule",
+         "Mode & $\\mu_n$ & measured & clear & $\\sigma_n/\\sigma_0$ & $A_n/A_0$ (dB) & spread (dB) & "
+         "p$\\to$f (dB) & keys \\\\",
          "\\midrule"]
-latex += [f"{t['mode']} & {t['mu']} & {t['clear']} & {t['meas']} & {fmt(t['ratio'], '.1f')} & "
-          f"{fmt(t['cdb'], '+.1f')} & {fmt(t['spread'], '.1f')} \\\\" for t in tab4]
+latex += [f"{t['mode']} & {t['mu']} & {fmt(t['meas'], '.2f')} & {t['clear']} & {fmt(t['ratio'], '.1f')} & "
+          f"{fmt(t['adb'], '+.1f')} & {fmt(t['spread'], '.1f')} & {fmt(t['p2f'], '+.1f')} & {t['keys']} \\\\"
+          for t in tab4]
 latex += ["\\bottomrule", "\\end{tabular}"]
 print("\n" + "\n".join(latex))
 
@@ -210,17 +221,16 @@ n_keys = len({x["note"] for x in rows})
 say(S, f"A mode was found with confidence in {len(rows)} cases on {n_keys} keys.")
 for t in tab4:
     if t["clear"]:
-        say(S, f"{t['mode']} ({t['mu']} f0): clear on {t['clear']} keys, {t['low']} of them below 150 Hz and "
-               f"therefore not used for c_n; decays {t['ratio']:.1f} times faster than the fundamental.")
+        say(S, f"{t['mode']} ({t['mu']} f0): clear on {t['clear']} keys, measured at {t['meas']:.2f} f0 "
+               f"({100 * (t['meas'] / t['mu'] - 1):+.1f} %); decays {t['ratio']:.1f} times faster than the "
+               f"fundamental; A_n/A_0 = {t['adb']:+.1f} dB, spread over the dynamics {t['spread']:.1f} dB, "
+               f"change from p to f {t['p2f']:+.1f} dB; in the model on {t['keys']} keys.")
 say(S, "No mode above m4 was found with confidence, so m5 and m6 are not part of the model.")
-
-# synthetic check (step4_synthetic_check.py), results saved there
-zs = np.load("cache/step4_synthetic_check.npz")
-err_c, bass = zs["err_c"], zs["bass"]
-say(S, f"On synthetic recordings with known excitation, c_n is recovered within {np.nanmedian(np.abs(err_c[~bass])):.1f} dB "
-       f"(median) from 150 Hz up, but misses by {np.nanmedian(np.abs(err_c[bass])):.0f} dB below 150 Hz.")
-print("(synthetic check: saved result of step4_synthetic_check.py, run with the previous step-6 version; "
-      "the measurement it tests is unchanged)")
+A0_growth = DB * np.log(vels[-1] / vels[0])
+say(S, f"From p to f the fundamental grows by about {A0_growth:.1f} dB in the bass (A_0 ~ v).")
+cells = int(ok6.sum()) * len(DYNS)
+say(S, f"Near a null of the hammer's pulse spectrum c_n is capped: in {(short < 1).sum()} of {cells} key x dynamic x "
+       f"mode cells the mode gets less than a_n A_0, by {-DB * np.log(np.median(short[short < 1])):.1f} dB in the median.")
 
 
 def params(i, j):
@@ -243,7 +253,7 @@ lev = np.full((M, len(names)), np.nan)
 for i in range(M):
     if not ok6[i].any():
         continue
-    x = kappa * np.asarray(epsilon(t03, params(i, JF), TABLE, vel=VELS[JF]))
+    x = kappa * np.asarray(epsilon(t03, params(i, JF), TABLE, vel=float(vels[JF])))
     for n in np.flatnonzero(ok6[i]):
         lev[i, n] = line_db(x, FS, fit6["f_modes"][i, n]) - line_db(x, FS, f0[i])
 for n, m in enumerate(names[:3]):
@@ -252,10 +262,11 @@ for n, m in enumerate(names[:3]):
 
 # decay ratios against Gabrielli et al., Table II (laser vibrometer)
 gab = [("F1", "m2", 7.2, 2.6), ("F1", "m3", 20.6, 8.3), ("F3", "m2", 7.4, 24.5), ("F3", "m3", 20.7, 3.1), ("F3", "m4", 38.7, 13.4)]
-print("\ndecay ratio sigma_n/sigma_0, Gabrielli Table II against here (clear keys only):")
+print("\ndecay ratio sigma_n/sigma_0 (sigma_0 of step 2), Gabrielli Table II against here (clear keys only):")
 for key, m, ratio_f, g in gab:
     hit = [x for x in rows if x["note"] == key and x["mode"] == m]
-    here = f"{hit[0]['ratio']:.1f} (at {hit[0]['ratio_f']:.2f} f0)" if hit else "not clear"
+    here = (f"{hit[0]['sig_n'] / fit2['sigma'][notes.index(key)]:.1f} (at {hit[0]['ratio_f']:.2f} f0)"
+            if hit else "not clear")
     print(f"  {key} {m} ({ratio_f} f0): Gabrielli {g:5.1f}   here {here}")
 
 # %% [markdown]
@@ -274,7 +285,7 @@ t_full = jnp.arange(int(DUR * FS)) / FS
 
 
 def render(i, j, t):
-    x = kappa * np.asarray(epsilon(t, params(i, j), TABLE, vel=VELS[j]))
+    x = kappa * np.asarray(epsilon(t, params(i, j), TABLE, vel=float(vels[j])))
     return np.concatenate([np.zeros(int(LEAD * FS)), x])
 
 
@@ -301,7 +312,7 @@ for i in range(M):
             m_ = Hr[n] > NOISE_MARGIN * er[n]
             if m_.any():
                 dev_h[i, j, n] = np.median(DB * np.log(Hm[n][m_] / Hr[n][m_]))
-        if measured[i]:
+        if f0[i] >= 150:                                    # below, 7.1 f0 is too close to 7 f0 to find
             fr, dbr = s5.spectrum(*s5.load(notes[i], dyn))
             for n in np.flatnonzero(ok6[i]):
                 fp = s5.find_peak(fr, dbr, float(s5.FUND[i5, j]["f"]), *s5.MODES[names[n]])
@@ -341,13 +352,12 @@ for n, m in enumerate(names):
     if not hit:
         continue
     fx = np.array([x["f0"] for x in hit]); sg = np.array([x["sig_n"] for x in hit])
-    low = fx < 150
-    ax.loglog(fx[~low], sg[~low], "o", ms=3.5, color=f"C{n}", label=m)
-    ax.loglog(fx[low], sg[low], "o", ms=3.5, mfc="none", color=f"C{n}")
-    r_n = np.median([x["ratio"] for x in hit])
-    ax.loglog(fg[fg < 3000], r_n * np.exp(a) * fg[fg < 3000] ** b, "--", color=f"C{n}", lw=0.8)
+    ax.loglog(fx, sg, "o", ms=3.5, color=f"C{n}", label=m)
+    # the model: sigma_n = r_n sigma_0 (step 2) on the keys where the mode is in the model
+    k = ok6[:, n]
+    ax.loglog(f0[k], fit6["sig"][k, n], "--", color=f"C{n}", lw=0.8)
 ax.set_xlabel("$f_0$ (Hz)"); ax.set_ylabel(r"decay rate $\sigma$ (1/s)")
-ax.legend(ncol=2, loc="upper left")
+ax.legend(ncol=2, loc="lower right", title=r"dots: measured, dashed: model $\sigma_n$", title_fontsize=7)
 plt.savefig("figures/fig_decay_rates.pdf"); plt.show()
 
 # Figure B: example key, step 2, harmonics measured and modelled over time
@@ -374,7 +384,7 @@ plt.savefig("figures/fig_step2_example.pdf"); plt.show()
 pred = np.zeros((M, len(DYNS)))
 for i in range(M):
     a_ = []
-    for v in VELS:
+    for v in vels:
         tau = float(calc_tau(v, dict(tau_0=fit3["tau0"][i], beta=beta)))
         a_.append(abs(float(hammer2free(float(f0[i]), 1.0, v, tau)[0])) * np.exp(-float(fit2["sigma"][i]) * (T_START - tau)))
     pred[i] = np.array(a_) / a_[-1]
@@ -383,7 +393,7 @@ fig, ax = plt.subplots(figsize=(W1, 2.4))
 for j in range(3):
     ax.semilogx(f0, DB * np.log(meas[:, j]), "o", ms=2.5, color=f"C{j}", label=DYNS[j])
     ax.semilogx(f0, DB * np.log(pred[:, j]), "-", color=f"C{j}")
-    ax.axhline(DB * np.log(VELS[j]), color=f"C{j}", ls="--", lw=0.8)
+    ax.axhline(DB * np.log(vels[j]), color=f"C{j}", ls="--", lw=0.8)
 ax.set_xlabel("$f_0$ (Hz)"); ax.set_ylabel(r"$A_0(\mathrm{dyn})/A_0(f)$ (dB)")
 ax.legend(title="dots: measured, lines: model", ncol=3)
 plt.savefig("figures/fig_hammer_amplitudes.pdf"); plt.show()
