@@ -148,130 +148,164 @@ for mode in MODES:
 
 
 # %% [markdown]
-# ## B. Excitation of the modes on every key
+# ## B. The modes on every key
 #
-# Part A measures each mode's decay only on the keys where the mode is clear, as a
-# multiple of the fundamental's decay.  Part B puts the modes on **all** keys, using only
-# what part A gives:
+# Part A measures each mode only on the keys where it is clear.  Part B puts the modes on
+# **all** keys: every quantity is one number per mode, the median over the clear keys, as
+# for the decays in part A.  (No trend over the keyboard: the scatter between neighbouring
+# keys hides any.)
 #
-# - **Frequency**: $f_n = \mu_n f_0$, Gabrielli's mean ratio (`MODES` of part A) times the
-#   key's $f_0$ (step 2).  Modes above `F_MAX` = 10 kHz are left out (Gabrielli found none).
-# - **Decay**: $\sigma_n = r_n \sigma_0$, $r_n$ the median of part A's ratios over the clear
-#   keys.  Modes without a clear key have no $r_n$ and are left out.
-# - **Excitation** $c_n$, the only thing set here, treated like the decays: measured only on
-#   the keys where part A found the mode clearly, as a ratio $c_n / c_0$, and the median over
-#   those keys applied to all keys ($c_n = (c_n/c_0) \cdot c_0$).
-#   The measurement: part A's spectrum of the first `T_FFT` s and its peak search near
-#   $\mu_n f_0$ give the mode's level in the recording.  The model's spectrum over the same
-#   span, read at $f_n$, is proportional to $c_n$ (a small mode passes the pickup linearly),
-#   so one render with a trial $c_n$ and one scaling match the two.  This is done per
-#   dynamic; a key's ratio is the mean of $\log(c_n / c_0)$ over the dynamics.
-#   Keys below `F0_MIN` = 150 Hz are not measured: there $7.1 f_0$ lies within `HARM_HZ` of
-#   $7 f_0$, which the peak search excludes.
+# - **Frequency**: $f_n = \rho_n f_0$, $\rho_n$ the median of part A's measured $f_n / f_0$,
+#   $f_0$ from step 2.  Gabrielli's ratios (`MODES`) only set where part A searches.  Modes
+#   above `F_MAX` = 10 kHz are left out (Gabrielli found none).
+# - **Decay**: $\sigma_n = r_n \sigma_0$, $r_n$ the median of $\sigma_n / \sigma_0$ with part A's
+#   $\sigma_n$ and $\sigma_0$ of step 2, the one the model uses.  (Part A prints the ratio to
+#   $\sigma_0$ of step 1.)  Modes without a clear key have no $r_n$ and are left out.
+# - **Amplitude**: $A_n = a_n A_0$, one ratio $a_n$ per mode for all keys **and all
+#   dynamics**.  $A_n$ and $A_0$ are the free amplitudes of the tine at $t_0$ = onset +
+#   `T_START`.  $A_n / A_0$ hardly changes with the dynamic, so the modes simply follow the
+#   fundamental's velocity law of step 3.  Measured on the clear keys at every dynamic: the
+#   level of the mode in the recording (part A's spectrum of the first `T_FFT` s after $t_0$,
+#   at part A's peak) against the model of step 2 (free fundamental $A_0$ through the pickup)
+#   with the mode added at a trial amplitude.  A small mode passes the pickup linearly, so one
+#   scaling matches the two.  A key's ratio is the mean of $\log(A_n / A_0)$ over its dynamics.
+# - **Excitation** $c_n$: not measured, only converted.  The model starts every mode through
+#   the hammer (`hammer2free`), so per key and dynamic $c_n$ is the excitation for which the
+#   hammer hands over $A_n(\tau) = a_n A_0(t_0)\, e^{\sigma_n (t_0 - \tau)}$, with $A_0(t_0)$ the
+#   fundamental the hammer of step 3 leaves.  The hammer model thus sets how the fundamental
+#   grows with velocity, but not how the modes grow relative to it: its pulse spectrum at
+#   $f_n \tau$ = 3 - 44 is not checked against the data (step 3 sees only $f_0 \tau \le 2$).
+#   Near the nulls of the pulse spectrum ($f_n \tau$ = 2, 3, ...) $c_n$ is capped (`G_FLOOR`),
+#   and the mode there gets less than $a_n A_0$.
 #
-# Everything else is fixed from steps 2 and 3.  Output `results/step4_modes.npz` for `synth.py`
-# (`c`: $c_n$ per key, repeated per dynamic; `c_dyn`: the measured value of each dynamic, 0
-# where not measured; `measured`: keys at or above `F0_MIN`).
+# Velocities: `vels` of step 3 (from the bass), not the assumed `VELS` of step 2.  Everything
+# else is fixed from steps 2 and 3.  Output `results/step4_modes.npz` for `synth.py` (`c`: $c_n$
+# per key and dynamic; `a`: $a_n$; `a_key`, `a_dyn`: the measured $A_n / A_0$ per clear key,
+# and per clear key and dynamic, nan elsewhere).
 
 
 # %%
+import jax
+
+from step2_pickup import eps_free, load_wave, onset
+
 F_MAX   = 10e3     # Hz, no modes above (Gabrielli 2020)
-FS      = 48000.0  # model sample rate
+FS      = 48000.0  # model sample rate (= the recordings')
 A_TRIAL = 1e-3     # trial amplitude A_n / A_0 (small: the pickup is linear for it)
-F0_MIN  = 150.0    # Hz, below: c_n not measurable (see above)
 
 fit2 = np.load("results/step2_pickup.npz", allow_pickle=True)
 fit3 = np.load("results/step3_hammer.npz", allow_pickle=True)
 assert (fit2["notes"] == fit3["notes"]).all()              # fit3 is indexed with fit2's keys
-kappa, beta = float(fit2["kappa"]), float(fit3["beta"])
+notes = list(fit2["notes"])
+kappa, beta, vels = float(fit2["kappa"]), float(fit3["beta"]), fit3["vels"]
+f0, sig0, c0 = fit2["f0"], fit2["sigma"], fit3["c0"]
 names = list(MODES)
-mu, sd = np.array([MODES[m] for m in names]).T
-r = np.array([np.median([x["ratio"] for x in rows if x["mode"] == m])
-              if any(x["mode"] == m for x in rows) else np.nan for m in names])
-notes = fit2["notes"]
-f_n   = mu[None, :] * fit2["f0"][:, None]                  # (keys, N)
-ok    = np.isfinite(r)[None, :] & (f_n < F_MAX)             # modes in the model
-sig_n = r[None, :] * fit2["sigma"][:, None]
+
+
+def median_clear(value):
+    """One number per mode: the median of value(row) over part A's clear keys, nan if none."""
+    return np.array([np.median([value(x) for x in rows if x["mode"] == m])
+                     if any(x["mode"] == m for x in rows) else np.nan for m in names])
+
+
+rho   = median_clear(lambda x: x["ratio_f"])                            # f_n / f_0
+r     = median_clear(lambda x: x["sig_n"] / sig0[notes.index(x["note"])])  # sigma_n / sigma_0
+f_n   = rho[None, :] * f0[:, None]                                      # (keys, N)
+sig_n = r[None, :] * sig0[:, None]
+for n, m in enumerate(names):
+    if np.isfinite(r[n]):
+        print(f"{m}: f_n/f_0 = {rho[n]:.3f} (Gabrielli {MODES[m][0]}), sigma_n/sigma_0 = {r[n]:.1f}")
+
+
+# %%
+t0_grid = jnp.arange(int(T_FFT * FS)) / FS                 # s after t_0 = onset + T_START
+free = jax.jit(lambda A, s, f, p_o, p_d: kappa * eps_free(t0_grid, A, s, f, p_o, p_d, TABLE))
+
+
+def ratio_a(x, j):
+    """A_n / A_0 at t_0 of part A's clear mode x in the recording of dynamic j; nan if that
+    recording's peak is not part A's.  The mode's part of the model is the model with the
+    mode (at the key's own f_n and sigma_n of part A) minus the model without it: on low keys
+    the window's main lobe of a harmonic would otherwise be read."""
+    i, i5 = notes.index(x["note"]), NOTES.index(x["note"])
+    w, fs = load_wave(x["note"], DYNS[j])
+    assert fs == FS
+    f, db = spectrum(w[onset(w) + int(round(T_START * fs)):], fs)
+    fp = find_peak(f, db, FUND[i5, j]["f"], *MODES[x["mode"]])
+    if not abs(fp - x["f"]) <= AGREE * x["f"]:                # also nan: no peak
+        return np.nan
+    A0 = float(fit2["A0"][i, j])
+    args = (jnp.array([sig0[i], x["sig_n"]]), jnp.array([f0[i], x["f"]]),
+            float(fit2["p_o"][i]), float(fit2["p_d"][i]))
+    mode = np.asarray(free(jnp.array([A0, A_TRIAL * A0]), *args) - free(jnp.array([A0, 0.0]), *args))
+    fm, dbm = spectrum(mode, FS)
+    return A_TRIAL * 10 ** ((np.interp(fp, f, db) - np.interp(x["f"], fm, dbm)) / 20)
+
+
+# %%
+a_dyn = np.full((len(notes), len(DYNS), len(names)), np.nan)     # A_n / A_0, clear keys only
+for x in rows:
+    i, n = notes.index(x["note"]), names.index(x["mode"])
+    a_dyn[i, :, n] = [ratio_a(x, j) for j in range(len(DYNS))]
+    print(f"{x['note']}/{x['mode']}", end=" ", flush=True)
+print()
+
+# %%
+DB = 20 / np.log(10)
+with warnings.catch_warnings():                                            # keys not clear: all nan
+    warnings.simplefilter("ignore", RuntimeWarning)
+    log_a = np.log(a_dyn)
+    a_key = np.exp(np.nanmean(log_a, axis=1))                              # (keys, N)
+    spread = DB * np.nanstd(log_a, axis=1)                                 # dB, (keys, N)
+
+# One a_n per mode: the median over the clear keys, as the decays in part A.  Printed with it:
+# the spread over the dynamics of a key, and how A_n / A_0 changes from p to f (median over the
+# keys of the slope of log(A_n / A_0) against log v, times log(v_f / v_p))
+a = np.full(len(names), np.nan)
+for n, m in enumerate(names):
+    k = np.isfinite(a_key[:, n])
+    if not k.any():
+        print(f"{m}: no clear key with a measurement")
+        continue
+    a[n] = np.median(a_key[k, n])
+    slope = [np.polyfit(np.log(vels[u]), log_a[i, u, n], 1)[0]
+             for i in np.flatnonzero(k) for u in [np.isfinite(log_a[i, :, n])] if u.sum() >= 3]
+    print(f"{m}: A_n/A_0 = {DB * np.log(a[n]):+.1f} dB over {k.sum()} clear keys, spread over the "
+          f"dynamics {np.median(spread[k, n]):.1f} dB, p -> f {DB * np.median(slope) * np.log(vels[-1] / vels[0]):+.1f} dB")
+
+ok = np.isfinite(r * a)[None, :] & (f_n < F_MAX)                           # modes in the model
 print("modes in the model, keys:", dict(zip(names, ok.sum(0))))
 
 
 # %%
-def model_db(i, c, vel):
-    """Part A's spectrum (dB) of the modes' part of the model over the first T_FFT s after
-    contact, read at the kept f_n (-inf for the others).  The modes' part is the model with
-    the kept modes (excitation c) minus the model without them: on low keys 7.1 f_0 lies
-    within the window's main lobe of 7 f_0, whose leakage would otherwise be read."""
-    k = ok[i]
-    t = jnp.asarray(T_START + np.arange(int(T_FFT * FS)) / FS)
-
-    def eps(c_n):
-        p = dict(c=jnp.r_[fit3["c0"][i], c_n], lam=jnp.r_[fit2["sigma"][i], sig_n[i][k]],
-                 f_modes=jnp.r_[fit2["f0"][i], f_n[i][k]], tau_0=float(fit3["tau0"][i]),
-                 beta=beta, p_d=float(fit2["p_d"][i]), p_o=float(fit2["p_o"][i]))
-        return kappa * np.asarray(epsilon(t, p, TABLE, vel=vel))
-
-    f, db = spectrum(eps(c[k]) - eps(0.0 * c[k]), FS)
-    return np.where(k, np.interp(f_n[i], f, db), -np.inf)
+G_FLOOR = 0.1      # |sin(w tau / 2)| of the pulse spectrum floored here (see c_of)
 
 
-def amps(i, vel):
-    """Free amplitude A_0 of the fundamental and |A_n| per unit c_n that the hammer hands over."""
-    tau = calc_tau(vel, dict(tau_0=fit3["tau0"][i], beta=beta))
-    A0 = abs(float(hammer2free(fit2["f0"][i], fit3["c0"][i], vel, tau)[0]))
-    g = np.abs(np.asarray(hammer2free(jnp.asarray(f_n[i]), 1.0, vel, tau)[0]))
-    return A0, np.maximum(g, 1e-30)
+def c_of(i, j):
+    """c_n (N,) of key i at dynamic j: the excitation for which the hammer hands over
+    A_n(tau) = a_n A_0(t_0) e^{sigma_n (t_0 - tau)}; A_0(t_0) is the fundamental the hammer of
+    step 3 leaves (c_0), carried to t_0 = T_START after contact.  0 for modes not in the model.
+
+    The hammer hands over |A_n| = c_n 2|K| |sin(w tau / 2)| (`hammer2free`), with nulls at
+    f_n tau = 2, 3, ...  Near a null c_n would have to grow without bound, and the stiff mode
+    would push the tine far out during contact.  So |sin| is floored at G_FLOOR: there the mode
+    gets less than a_n A_0 (`short`: the fraction it gets, 1 elsewhere)."""
+    v = float(vels[j])
+    tau = float(calc_tau(v, dict(tau_0=fit3["tau0"][i], beta=beta)))
+    A0 = abs(float(hammer2free(f0[i], c0[i], v, tau)[0])) * np.exp(-sig0[i] * (T_START - tau))
+    g, phi = hammer2free(jnp.asarray(f_n[i]), 1.0, v, tau)                # A_n per unit c_n, w tau / 2
+    s = np.abs(np.sin(np.asarray(phi)))
+    env = np.abs(np.asarray(g)) / np.maximum(s, 1e-300)                   # 2|K|: the pulse spectrum without nulls
+    with np.errstate(invalid="ignore"):
+        c_n = np.where(ok[i], a * A0 * np.exp(sig_n[i] * (T_START - tau)) / (env * np.maximum(s, G_FLOOR)), 0.0)
+    return c_n, np.where(ok[i], s / np.maximum(s, G_FLOOR), 1.0)
 
 
-# %%
-measured = fit2["f0"] >= F0_MIN                             # keys whose c_n is measured
-c = np.zeros((len(notes), len(DYNS), len(names)))
-for i, note in enumerate(notes):
-    if not ok[i].any() or not measured[i]:
-        continue
-    i5 = NOTES.index(note)
-    for j, dyn in enumerate(DYNS):
-        # level in the recording: part A's peak near mu_n f_0 (-inf where there is none)
-        f, db = spectrum(*load(note, dyn))
-        fp = [find_peak(f, db, FUND[i5, j]["f"], m, s) for m, s in zip(mu, sd)]
-        db_rec = np.array([np.interp(x, f, db) if np.isfinite(x) else -np.inf for x in fp])
-        # trial c_n: free amplitude A_TRIAL * A_0, then scaled to the recording's level
-        A0, g = amps(i, VELS[j])
-        c_try = np.where(ok[i], A_TRIAL * A0 / g, 0.0)
-        with np.errstate(invalid="ignore"):
-            c[i, j] = np.where(ok[i], c_try * 10 ** ((db_rec - model_db(i, c_try, VELS[j])) / 20), 0.0)
-    print(f"{note:>4}", end=" ", flush=True)
-
-# %%
-c = c_dyn = np.nan_to_num(c)                                              # (keys, dyn, N)
-used = ok[:, None, :] & (c > 0)
-print("\nkeys x dynamics with a c_n per mode:", dict(zip(names, used.sum((0, 1)))))
-
-# Keys where part A found the mode clearly
-clear = np.zeros(ok.shape, bool)
-for x in rows:
-    clear[list(notes).index(x["note"]), names.index(x["mode"])] = True
-clear &= ok
-
-# c_n / c_0 per key: mean of the log over the dynamics; spread over the dynamics in dB
-c0 = fit3["c0"]
-log_rel = np.where(used, np.log(np.where(used, c, 1.0)) - np.log(c0)[:, None, None], np.nan)
-with warnings.catch_warnings():                                            # unmeasured keys: all nan
-    warnings.simplefilter("ignore", RuntimeWarning)
-    key_rel = np.nanmean(log_rel, axis=1)                                  # (keys, N)
-    spread = 20 / np.log(10) * np.nanstd(log_rel, axis=1)                 # dB, (keys, N)
-
-# One c_n / c_0 per mode: the median over the clear keys, as the decays in part A
-rel = np.full(len(names), np.nan)
-for n, m in enumerate(names):
-    k = clear[:, n] & np.isfinite(key_rel[:, n])                          # clear and measured
-    if k.any():
-        rel[n] = np.median(key_rel[k, n])
-        print(f"{m}: c_n/c_0 = {20 / np.log(10) * rel[n]:+.1f} dB over {k.sum()} clear keys "
-              f"({clear[:, n].sum()} clear), spread over the dynamics {np.median(spread[k, n]):.1f} dB")
-    else:
-        print(f"{m}: no clear key with a measurement")
-c = np.where(ok & np.isfinite(rel)[None, :], np.exp(rel)[None, :] * c0[:, None], 0.0)   # (keys, N)
-c = np.repeat(c[:, None, :], len(DYNS), axis=1)                            # same for every dynamic
-np.savez(RESULTS, notes=notes, dyns=np.array(DYNS), ratios=mu, modes=names,
-         f_modes=f_n, ok=ok, used=used, measured=measured, c=c, c_dyn=c_dyn, sig=np.where(ok, sig_n, np.nan))
+c, short = (np.array(x) for x in zip(*[c_of(i, j) for i in range(len(notes)) for j in range(len(DYNS))]))
+c, short = c.reshape(len(notes), len(DYNS), -1), short.reshape(len(notes), len(DYNS), -1)   # (keys, dyn, N)
+print(f"A_n below a_n A_0 (pulse null): {(short < 1).sum()} of {ok.sum() * len(DYNS)} key x dynamic x mode, "
+      f"median {DB * np.log(np.median(short[short < 1])):+.1f} dB")
+np.savez(RESULTS, notes=np.array(notes), dyns=np.array(DYNS), modes=names, ratios=rho, vels=vels,
+         f_modes=f_n, sig=np.where(ok, sig_n, np.nan), ok=ok, c=c, short=short,
+         a=a, a_key=a_key, a_dyn=a_dyn, sig_ratio=r)
 print(f"-> {RESULTS}")

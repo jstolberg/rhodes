@@ -20,7 +20,7 @@ import scipy.io.wavfile as wavfile
 
 import step1_fundamental as step1_results
 from model import disp_bound, epsilon
-from step2_pickup import DISP_MAX, DYNS, TABLE, VELS, eps_free, load_wave
+from step2_pickup import DISP_MAX, DYNS, TABLE, eps_free, load_wave
 
 FS, DUR, LEAD = 48000, 8.0, 10e-3     # sample rate, length (s), silence before the onset (s)
 OUT = "render"
@@ -70,49 +70,34 @@ def step3(note, dyn):
     t = jnp.arange(int(DUR * FS)) / FS
     p = dict(c=jnp.array([fit3["c0"][i]]), lam=jnp.array([fit2["sigma"][i]]), f_modes=jnp.array([fit2["f0"][i]]),
              tau_0=float(fit3["tau0"][i]), beta=float(fit3["beta"]), p_d=float(fit2["p_d"][i]), p_o=float(fit2["p_o"][i]))
-    vel = VELS[DYNS.index(dyn)]
+    vel = float(fit3["vels"][DYNS.index(dyn)])
     x = float(fit2["kappa"]) * np.asarray(epsilon(t, p, TABLE, vel=vel))
     print(f"{note}-{dyn} step 3: f0 {p['f_modes'][0]:.1f} Hz, tau {p['tau_0'] * vel ** -p['beta'] * 1e3:.2f} ms, "
           f"c_0 {p['c'][0]:.3e}")
     return _finish(x)
 
 
-def c_filled(c, used):
-    """c (n_dyn, N) with unknown entries (used False) taken from the nearest dynamic that
-    has a value.  Lines without any value stay 0 (they are dropped anyway)."""
-    c = c.copy()
-    for n in range(c.shape[1]):
-        have = np.flatnonzero(used[:, n])                 # dynamics with a fitted c_n
-        if len(have) == 0:
-            continue
-        for j in range(c.shape[0]):
-            if not used[j, n]:
-                c[j, n] = c[have[np.argmin(np.abs(have - j))], n]
-    return c
-
-
 def step4(note, dyn):
-    """step4_modes.npz holds one c_n per dynamic, so every dynamic is rendered with its own
-    c_n.  If a mode had no frames above the noise at some dynamic, its c_n there is unknown;
-    it is then taken from the nearest dynamic that has one."""
+    """step4_modes.npz holds c_n per key and dynamic: the excitation for which the hammer
+    hands over A_n = a_n A_0, one ratio a_n per mode for all keys and dynamics."""
     fit2, fit3, fit4 = load(2), load(3), load(4)
     i = list(fit2["notes"]).index(note)                   # index in steps 2 and 3
     m = list(fit4["notes"]).index(note)                   # index in step 4
-    keep = fit4["ok"][m]                                  # robust modes of step 4 A
-    c_all = c_filled(fit4["c"][m], fit4["used"][m])       # (n_dyn, N)
+    keep = fit4["ok"][m]                                  # modes in the model on this key
     j = DYNS.index(dyn)
+    vel = float(fit3["vels"][j])
     t = jnp.arange(int(DUR * FS)) / FS
     # All modes of this key: the fundamental first, then the kept inharmonic modes
-    p = dict(c=jnp.concatenate([jnp.array([fit3["c0"][i]]), jnp.asarray(c_all[j][keep])]),
+    p = dict(c=jnp.concatenate([jnp.array([fit3["c0"][i]]), jnp.asarray(fit4["c"][m, j][keep])]),
              lam=jnp.concatenate([jnp.array([fit2["sigma"][i]]), jnp.asarray(fit4["sig"][m][keep])]),
              f_modes=jnp.concatenate([jnp.array([fit2["f0"][i]]), jnp.asarray(fit4["f_modes"][m][keep])]),
              tau_0=float(fit3["tau0"][i]), beta=float(fit3["beta"]),
              p_d=float(fit2["p_d"][i]), p_o=float(fit2["p_o"][i]))
-    reach = disp_bound(p)                                 # the pickup table only covers DISP_MAX
+    reach = disp_bound(p, vel)                            # the pickup table only covers DISP_MAX
     if reach > DISP_MAX:
         print(f"warning {note}-{dyn}: displacement up to {reach * 1e3:.2f} mm "
               f"> DISP_MAX {DISP_MAX * 1e3:.1f} mm")
-    x = float(fit2["kappa"]) * np.asarray(epsilon(t, p, TABLE, vel=VELS[j]))
+    x = float(fit2["kappa"]) * np.asarray(epsilon(t, p, TABLE, vel=vel))
     print(f"{note}-{dyn} step 4: f_n/f_0 {np.round(np.asarray(p['f_modes'][1:]) / fit2['f0'][i], 3)}, "
           f"sigma_n {np.round(np.asarray(p['lam'][1:]), 2)} 1/s")
     return _finish(x)

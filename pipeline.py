@@ -197,10 +197,9 @@ fit4 = synth.load(4)
 # one value per mode, the same on every key; nan: the mode was not found on any key
 with np.errstate(all="ignore"), __import__("warnings").catch_warnings(action="ignore"):
     sig_ratio = np.nanmedian(fit4["sig"] / fit2["sigma"][:, None], axis=0)
-    c_ratio = np.nanmedian(np.where(fit4["ok"], fit4["c"][:, 0] / fit3["c0"][:, None], np.nan), axis=0)
-    print(f"{'mode':>5} {'f_n/f_0':>8} {'sigma_n/sigma_0':>16} {'c_n/c_0 (dB)':>13} {'keys in the model':>18}")
+    print(f"{'mode':>5} {'f_n/f_0':>8} {'sigma_n/sigma_0':>16} {'A_n/A_0 (dB)':>13} {'keys in the model':>18}")
     for n, m in enumerate(fit4["modes"]):
-        print(f"{m:>5} {fit4['ratios'][n]:8.1f} {sig_ratio[n]:16.1f} {20 * np.log10(c_ratio[n]):13.1f} {fit4['ok'][:, n].sum():18d}")
+        print(f"{m:>5} {fit4['ratios'][n]:8.2f} {sig_ratio[n]:16.1f} {20 * np.log10(fit4['a'][n]):13.1f} {fit4['ok'][:, n].sum():18d}")
 
 # %% [markdown]
 # ### Across the keyboard
