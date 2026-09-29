@@ -111,10 +111,14 @@ plt.tight_layout(); plt.show()
 # %%
 if RERUN[1]:
     run_step("step1_fundamental.py")
-tab, notes, dyns = synth.step1_results.load()
-from step1_fundamental import f0_of
+fit1 = synth.load(1)
+tab, notes, dyns = fit1["table"], fit1["notes"], fit1["dyns"]
+# nominal frequency, equal temperament at A = 440 Hz; the library names are an octave low
+# (as f0_of in step1_fundamental.py)
+NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+nominal = np.array([440.0 * 2.0 ** (((int(n[-1]) + 2) * 12 + NAMES.index(n[:-1]) - 69) / 12) for n in notes])
 f_note = np.median(tab["f"], axis=1)
-cents = 1200 * np.log2(f_note / np.array([f0_of(n) for n in notes]))
+cents = 1200 * np.log2(f_note / nominal)
 
 fig, ax = plt.subplots(1, 2, figsize=(12, 3.5))
 ax[0].plot(cents, ".-"); ax[0].set_ylabel("tuning (cents)"); ax[0].axhline(0, color="k", lw=0.5)

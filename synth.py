@@ -18,17 +18,17 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.io.wavfile as wavfile
 
-import step1_fundamental as step1_results
 from model import disp_bound, epsilon
-from step2_pickup import DISP_MAX, DYNS, TABLE, eps_free, load_wave
+from step2_pickup import DISP_MAX, DYNS, SAMPLES, TABLE, eps_free, load_wave
 
 FS, DUR, LEAD = 48000, 8.0, 10e-3     # sample rate, length (s), silence before the onset (s)
 OUT = "render"
+EXAMPLES = "examples"                # the recordings pipeline.py plays, for use without Samples/
 
 
 def load(step):
-    return np.load({2: "results/step2_pickup.npz", 3: "results/step3_hammer.npz",
-                    4: "results/step4_modes.npz"}[step], allow_pickle=True)
+    return np.load({1: "results/step1_fundamentals.npz", 2: "results/step2_pickup.npz",
+                    3: "results/step3_hammer.npz", 4: "results/step4_modes.npz"}[step], allow_pickle=True)
 
 
 def _finish(x):
@@ -41,7 +41,8 @@ def step1(note, dyn):
     recording's fundamental (amp0 is the level of the mixed-down envelope, half the sine's).
     Where lambda_0 or amp0 was not measured, the median over the note's other dynamics
     (no decay if there is none)."""
-    tab, notes, dyns = step1_results.load()
+    fit1 = load(1)
+    tab, notes, dyns = fit1["table"], fit1["notes"], fit1["dyns"]
     i, j = list(notes).index(note), list(dyns).index(dyn)
     row = tab[i, j]
     lam = row["lam"] if row["ok"] else (np.nanmedian(tab["lam"][i]) if tab["ok"][i].any() else 0.0)
@@ -108,8 +109,14 @@ def render(step, note, dyn="f"):
 
 
 def recording(note, dyn="f"):
-    """The recording, cut to DUR s."""
-    x, fs = load_wave(note, dyn)
+    """The recording, cut to DUR s: from Samples/, else from examples/."""
+    if os.path.exists(f"{SAMPLES}/{note}-{dyn}.wav"):
+        x, fs = load_wave(note, dyn)
+    else:
+        fs, x = wavfile.read(f"{EXAMPLES}/{note}-{dyn}.wav")
+        x, fs = np.asarray(x, dtype=np.float64), float(fs)
+        if x.ndim > 1:
+            x = x.mean(axis=1)
     return x[:int(DUR * fs)]
 
 
