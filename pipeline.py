@@ -186,9 +186,10 @@ listen(3)
 # ## Step 4: Inharmonic modes
 #
 # **A.** Modes near Gabrielli's ratios, kept only where three of the four dynamics agree on
-# the frequency; their decay from p and mp, as a ratio to the fundamental's; the median over
-# those keys per mode.  **B.** $c_n$ from the mode's level in the first 0.3 s, on the same
-# keys, as $c_n / c_0$; the median applied to all keys.  After this step the model is complete.
+# the frequency; their decay from p and mp.  **B.** On every key, one number per mode, the
+# median over those keys: $f_n = \mu_n f_0$ (Gabrielli), $\sigma_n = r_n \sigma_0$ ($\sigma_0$ of
+# step 2) and the free amplitude $A_n = a_n A_0$ for every dynamic, measured from the mode's
+# level in the first 0.3 s; $c_n$ is only converted from it.  After this step the model is complete.
 
 # %%
 if RERUN[4]:
